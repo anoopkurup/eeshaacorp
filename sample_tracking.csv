@@ -1,0 +1,11 @@
+first_name,phone_number,status,sent_at,responded,followup_sent,reminder_sent
+Anoop,+919876543210,sent,2026-02-14 10:30:00,yes,yes,no
+Priya,+919876543211,sent,2026-02-14 10:31:00,yes,no,no
+Rahul,+919876543212,sent,2026-02-14 10:32:00,no,no,yes
+Meera,+919876543213,sent,2026-02-14 10:33:00,no,no,no
+Arjun,+919876543214,failed,2026-02-14 10:34:00,no,no,no
+Sneha,+919876543215,pending,,no,no,no
+Vikram,+919876543216,pending,,no,no,no
+Deepa,+919876543217,sent,2026-02-14 10:37:00,yes,yes,no
+Karthik,+919876543218,sent,2026-02-14 10:38:00,no,no,yes
+Lakshmi,+919876543219,failed,2026-02-14 10:39:00,no,no,no

@@ -4,21 +4,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-WhatsApp Web automation script using Selenium to send personalized messages to multiple contacts. The script uses WhatsApp Web (not the official API) and maintains a persistent Chrome profile to avoid repeated QR code scanning.
+WhatsApp Web automation script using Selenium to send personalized messages to multiple contacts, with campaign management, response tracking, follow-ups, and reminders. The script uses WhatsApp Web (not the official API) and maintains a persistent Chrome profile to avoid repeated QR code scanning.
 
 ## Architecture
 
-**Single-script automation:**
-- `whatsapp_sender.py` - Main script containing all logic (CSV parsing, message templating, Selenium automation)
-- `contacts.csv` - Contact data with `first_name` and `phone_number` columns
-- `message_template.md` - Message template using `{first_name}` placeholder for personalization
+**Single-script automation with campaign-based organization:**
+- `whatsapp_sender.py` - Main script with argparse subcommands (create, send, followup, remind, referral, status)
+- `campaigns/` - Directory containing campaign folders, each with its own contacts, templates, and tracking
+
+**Campaign directory structure:**
+```
+campaigns/<campaign_name>/
+  contacts.csv       # first_name, phone_number
+  message.md         # Initial outreach template ({first_name} placeholder)
+  followup.md        # Template for interested responders
+  reminder.md        # Template for non-responders
+  referral.md        # Forwardable message for referrers
+  tracking.csv       # Auto-generated after send; editable in Excel
+```
+
+**Tracking CSV columns:**
+`first_name, phone_number, status, sent_at, responded, interested, followup_sent, reminder_sent, referrer, referral_sent`
+
+- `status`: `pending`, `sent`, or `failed`
+- `responded`: `yes` or `no` (manually updated by user in Excel/Sheets)
+- `interested`: `yes` or `no` (manually updated by user — only contacts with `interested=yes` get follow-ups)
+- `referrer`: `yes` or empty (manually updated — contacts willing to refer others)
+- `followup_sent` / `reminder_sent` / `referral_sent`: `yes` or `no` (updated by followup/remind/referral commands)
 
 **Key workflow:**
-1. Load contacts from CSV and message template from markdown
-2. Initialize Chrome WebDriver with persistent profile (`~/whatsapp_chrome_profile`)
-3. Navigate to WhatsApp Web and wait for QR scan (first run only)
-4. For each contact: construct WhatsApp Web URL with pre-filled message, wait for send button, click to send
-5. Rate limiting: 5-second delay between messages to avoid WhatsApp blocks
+1. `create` - Set up campaign folder with contacts and templates
+2. `send` - Send initial messages, generates tracking.csv
+3. User opens tracking.csv in Excel, marks `responded=yes`, `interested=yes/no`, `referrer=yes`
+4. `followup` - Send follow-up to contacts with `interested=yes`
+5. `remind` - Send reminder to contacts with `responded=no`
+6. `referral` - Send forwardable message to contacts with `referrer=yes`
+7. `status` - View campaign progress at any time
 
 ## Dependencies
 
@@ -35,28 +56,40 @@ Required packages:
 ## Running the Script
 
 ```bash
-python whatsapp_sender.py
+# Create a campaign
+python whatsapp_sender.py create workshop_feb --contacts contacts.csv --message message_template.md
+
+# Send initial messages 
+python whatsapp_sender.py send workshop_feb
+
+# Check status
+python whatsapp_sender.py status workshop_feb
+
+# Send follow-up to interested contacts (after marking interested=yes in tracking.csv)
+python whatsapp_sender.py followup workshop_feb
+
+# Send reminder to non-responders
+python whatsapp_sender.py remind workshop_feb
+
+# Send forwardable message to referrers (after marking referrer=yes in tracking.csv)
+python whatsapp_sender.py referral workshop_feb
 ```
 
 **First run:** Chrome opens WhatsApp Web → scan QR code → press Enter → messages send automatically
 
 **Subsequent runs:** Session persists via Chrome profile, no QR scan needed
 
-**Stopping gracefully:** Press Ctrl+C at any time. The script will finish the current message, show a summary, and close the browser cleanly. The shutdown check happens:
-- Before each message
-- After each message
-- During the wait period (every second)
+**Stopping gracefully:** Press Ctrl+C at any time. The script will finish the current message, save tracking, and close the browser cleanly. Run `send` again to resume from where you left off.
 
 ## Configuration Constants
 
 Located at top of `whatsapp_sender.py`:
 
+- `CAMPAIGNS_DIR = Path("campaigns")` - Root directory for all campaigns
 - `WAIT_BETWEEN_MESSAGES = 3` - Seconds between messages (increase if hitting rate limits)
 - `PAGE_LOAD_TIMEOUT = 60` - Max seconds to wait for initial WhatsApp Web load
 - `MESSAGE_LOAD_TIMEOUT = 10` - Max seconds to wait for each message chat to load
 - `CHROME_PROFILE_DIR` - Session storage location (default: `~/whatsapp_chrome_profile`)
-
-**Performance:** Each message typically takes 3-5 seconds total (2-3s to load chat + click send + 3s wait). The shorter MESSAGE_LOAD_TIMEOUT prevents long delays when contacts load quickly.
 
 ## WhatsApp Web Selectors
 
@@ -74,13 +107,13 @@ The script uses multiple fallback CSS selectors for robustness since WhatsApp We
 - `button[aria-label*='Send']`
 - `[data-testid='send']`
 
-If all selectors fail, the script provides debugging info (URL, page title) and continues, allowing manual verification.
+If all selectors fail, the script provides debugging info (URL, page title) and continues.
 
 ## Phone Number Format
 
 - Must include country code (e.g., `+919876543210` for India)
 - Script strips spaces and `+` prefix when constructing WhatsApp Web URL
-- Invalid/non-WhatsApp numbers will timeout and be marked as failed
+- Invalid/non-WhatsApp numbers will timeout and be marked as failed in tracking.csv
 
 ## Selenium Strategy
 
@@ -93,8 +126,9 @@ This pre-fills the message, avoiding complex element interaction. Script just wa
 The script implements graceful shutdown via SIGINT (Ctrl+C):
 - `shutdown_requested` global flag set by signal handler
 - Checked at multiple points: before message, after message, and during wait loops
-- When triggered: finishes current message, prints summary with processed count, closes browser cleanly
+- When triggered: finishes current message, saves tracking.csv, closes browser cleanly
 - Wait periods use 1-second intervals to check shutdown flag frequently
+- Run `send` again to resume - already-sent contacts are skipped automatically
 
 ## Chrome Profile Persistence
 
@@ -111,3 +145,4 @@ rm -rf ~/whatsapp_chrome_profile
 - **Phone must stay online:** WhatsApp account's phone needs internet during sending
 - **No delivery confirmation:** Script doesn't verify message delivery status
 - **Chrome requirement:** Requires Google Chrome browser installed
+- **Manual response tracking:** User must manually mark responders in tracking.csv (open in Excel/Sheets)
