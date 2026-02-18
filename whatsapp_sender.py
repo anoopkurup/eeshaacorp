@@ -14,8 +14,11 @@ Usage:
     python whatsapp_sender.py create <campaign> [--contacts file.csv] [--message file.md]
     python whatsapp_sender.py send <campaign>
     python whatsapp_sender.py followup <campaign>
+    python whatsapp_sender.py followup2 <campaign>
+    python whatsapp_sender.py followup3 <campaign>
     python whatsapp_sender.py remind <campaign>
     python whatsapp_sender.py referral <campaign>
+    python whatsapp_sender.py askrefer <campaign>
     python whatsapp_sender.py status <campaign>
 
 First run: You'll need to scan the QR code to log into WhatsApp Web.
@@ -62,8 +65,8 @@ CHROME_PROFILE_DIR = str(Path.home() / "whatsapp_chrome_profile")
 
 TRACKING_COLUMNS = [
     "first_name", "phone_number", "status", "sent_at",
-    "responded", "interested", "followup_sent", "reminder_sent",
-    "referrer", "referral_sent",
+    "responded", "interested", "followup_sent", "followup2_sent", "followup3_sent",
+    "reminder_sent", "referrer", "referral_sent", "ask_to_refer_sent", "paid",
 ]
 
 
@@ -162,9 +165,13 @@ def init_tracking(contacts: pd.DataFrame) -> pd.DataFrame:
     tracking["responded"] = "no"
     tracking["interested"] = ""
     tracking["followup_sent"] = "no"
+    tracking["followup2_sent"] = "no"
+    tracking["followup3_sent"] = "no"
     tracking["reminder_sent"] = "no"
     tracking["referrer"] = ""
     tracking["referral_sent"] = "no"
+    tracking["ask_to_refer_sent"] = "no"
+    tracking["paid"] = "no"
     return tracking
 
 
@@ -335,17 +342,29 @@ def cmd_create(campaign_name: str, contacts_path: str = None, message_path: str 
         f.write("Hi {first_name}\n\nJust following up on my earlier message. Your reminder here.\n")
     print(f"   Created template reminder.md")
 
+    with open(campaign_dir / "followup2.md", "w") as f:
+        f.write("Hi {first_name}\n\nYour second follow-up message here.\n")
+    print(f"   Created template followup2.md")
+
+    with open(campaign_dir / "followup3.md", "w") as f:
+        f.write("Hi {first_name}\n\nYour third follow-up message here.\n")
+    print(f"   Created template followup3.md")
+
     with open(campaign_dir / "referral.md", "w") as f:
         f.write("Hi {first_name}\n\nWould you mind sharing this with your network? Your referral message here.\n")
     print(f"   Created template referral.md")
+
+    with open(campaign_dir / "ask_to_refer.md", "w") as f:
+        f.write("Hi {first_name}\n\nWould you be open to sharing this with anyone who might benefit? Your ask-to-refer message here.\n")
+    print(f"   Created template ask_to_refer.md")
 
     print(f"\n✅ Campaign '{campaign_name}' created at {campaign_dir}/")
     print(f"\nNext steps:")
     print(f"  1. Edit {campaign_dir}/contacts.csv with your contacts")
     print(f"  2. Edit {campaign_dir}/message.md with your outreach message")
-    print(f"  3. Edit {campaign_dir}/followup.md with your follow-up message")
+    print(f"  3. Edit {campaign_dir}/followup.md, followup2.md, followup3.md")
     print(f"  4. Edit {campaign_dir}/reminder.md with your reminder message")
-    print(f"  5. Edit {campaign_dir}/referral.md with your referral message")
+    print(f"  5. Edit {campaign_dir}/referral.md and ask_to_refer.md")
     print(f"  6. Run: python whatsapp_sender.py send {campaign_name}")
 
 
@@ -473,9 +492,10 @@ def cmd_followup(campaign_name: str):
 
     template = load_campaign_template(campaign_dir, "followup.md")
 
-    # Filter: interested=yes AND followup_sent=no
+    # Filter: responded=yes AND interested!=no AND followup_sent!=yes
     to_followup = tracking[
-        (tracking["interested"].astype(str).str.lower() == "yes") &
+        (tracking["responded"].astype(str).str.lower() == "yes") &
+        (tracking["interested"].astype(str).str.lower() != "no") &
         (tracking["followup_sent"].astype(str).str.lower() != "yes")
     ]
 
@@ -614,6 +634,111 @@ def cmd_remind(campaign_name: str):
     cmd_status(campaign_name)
 
 
+def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_col: str, label: str):
+    """Generic helper: filter contacts, send a template, update a tracking column."""
+    global shutdown_requested
+    signal.signal(signal.SIGINT, signal_handler)
+
+    campaign_dir = get_campaign_dir(campaign_name)
+    tracking = load_tracking(campaign_dir)
+
+    if tracking.empty:
+        print(f"No tracking data for '{campaign_name}'. Run 'send' first.")
+        return
+
+    template = load_campaign_template(campaign_dir, template_file)
+    to_send = filter_fn(tracking)
+
+    if len(to_send) == 0:
+        print(f"No contacts to send {label} to.")
+        return
+
+    print("=" * 50)
+    print(f"{label}: {campaign_name}")
+    print("=" * 50)
+    print(f"Sending {label} to {len(to_send)} contacts...")
+    print("(Press Ctrl+C at any time to stop gracefully)")
+
+    driver = create_driver()
+
+    try:
+        open_whatsapp(driver)
+        print(f"\n📤 Sending {label}...\n")
+
+        count = 0
+        for idx, row in to_send.iterrows():
+            if shutdown_requested:
+                print("\n🛑 Stopping as requested...")
+                break
+
+            first_name = row["first_name"]
+            phone = row["phone_number"]
+            count += 1
+
+            print(f"[{count}/{len(to_send)}] {label} to {first_name} ({phone})...")
+
+            message = personalize_message(template, first_name)
+
+            if send_message(driver, phone, message):
+                print(f"   ✓ Sent successfully")
+                update_tracking_row(tracking, phone, **{tracking_col: "yes"})
+            else:
+                print(f"   ✗ Failed")
+
+            save_tracking(campaign_dir, tracking)
+
+            if shutdown_requested:
+                break
+
+            if count < len(to_send):
+                for _ in range(WAIT_BETWEEN_MESSAGES):
+                    if shutdown_requested:
+                        break
+                    time.sleep(1)
+
+    finally:
+        print("\n🔒 Closing browser...")
+        driver.quit()
+        save_tracking(campaign_dir, tracking)
+
+    print()
+    cmd_status(campaign_name)
+
+
+def cmd_followup2(campaign_name: str):
+    """Send second follow-up to interested contacts who received first follow-up."""
+    def filter_fn(tracking):
+        return tracking[
+            (tracking["responded"].astype(str).str.lower() == "yes") &
+            (tracking["interested"].astype(str).str.lower() != "no") &
+            (tracking["followup_sent"].astype(str).str.lower() == "yes") &
+            (tracking["followup2_sent"].astype(str).str.lower() != "yes")
+        ]
+    _send_targeted(campaign_name, "followup2.md", filter_fn, "followup2_sent", "Follow-up 2")
+
+
+def cmd_followup3(campaign_name: str):
+    """Send third follow-up to interested contacts who received second follow-up."""
+    def filter_fn(tracking):
+        return tracking[
+            (tracking["responded"].astype(str).str.lower() == "yes") &
+            (tracking["interested"].astype(str).str.lower() != "no") &
+            (tracking["followup2_sent"].astype(str).str.lower() == "yes") &
+            (tracking["followup3_sent"].astype(str).str.lower() != "yes")
+        ]
+    _send_targeted(campaign_name, "followup3.md", filter_fn, "followup3_sent", "Follow-up 3")
+
+
+def cmd_ask_to_refer(campaign_name: str):
+    """Ask all responders if they'd be willing to refer others."""
+    def filter_fn(tracking):
+        return tracking[
+            (tracking["responded"].astype(str).str.lower() == "yes") &
+            (tracking["ask_to_refer_sent"].astype(str).str.lower() != "yes")
+        ]
+    _send_targeted(campaign_name, "ask_to_refer.md", filter_fn, "ask_to_refer_sent", "Ask to refer")
+
+
 def cmd_referral(campaign_name: str):
     """Send referral messages to contacts willing to refer others."""
     global shutdown_requested
@@ -708,9 +833,13 @@ def cmd_status(campaign_name: str):
     interested = len(tracking[tracking["interested"].astype(str).str.lower() == "yes"])
     not_interested = len(tracking[tracking["interested"].astype(str).str.lower() == "no"])
     followup_done = len(tracking[tracking["followup_sent"].astype(str).str.lower() == "yes"])
+    followup2_done = len(tracking[tracking["followup2_sent"].astype(str).str.lower() == "yes"])
+    followup3_done = len(tracking[tracking["followup3_sent"].astype(str).str.lower() == "yes"])
     reminder_done = len(tracking[tracking["reminder_sent"].astype(str).str.lower() == "yes"])
     referrers = len(tracking[tracking["referrer"].astype(str).str.lower() == "yes"])
     referral_done = len(tracking[tracking["referral_sent"].astype(str).str.lower() == "yes"])
+    ask_to_refer_done = len(tracking[tracking["ask_to_refer_sent"].astype(str).str.lower() == "yes"])
+    paid = len(tracking[tracking["paid"].astype(str).str.lower() == "yes"])
 
     print("=" * 50)
     print(f"Campaign: {campaign_name}")
@@ -722,13 +851,20 @@ def cmd_status(campaign_name: str):
     print(f"  Responded:           {responded} / {sent}")
     print(f"  Interested:          {interested}")
     print(f"  Not interested:      {not_interested}")
-    print(f"  Follow-ups sent:     {followup_done}")
+    print(f"  Paid:                {paid}")
+    print(f"  Follow-up 1 sent:    {followup_done}")
+    print(f"  Follow-up 2 sent:    {followup2_done}")
+    print(f"  Follow-up 3 sent:    {followup3_done}")
     print(f"  Reminders sent:      {reminder_done}")
     print(f"  Referrers:           {referrers}")
     print(f"  Referrals sent:      {referral_done}")
+    print(f"  Ask to refer sent:   {ask_to_refer_done}")
     print(f"  Awaiting follow-up:  {max(0, interested - followup_done)}")
+    print(f"  Awaiting follow-up2: {max(0, followup_done - followup2_done)}")
+    print(f"  Awaiting follow-up3: {max(0, followup2_done - followup3_done)}")
     print(f"  Awaiting reminder:   {max(0, sent - responded - reminder_done)}")
     print(f"  Awaiting referral:   {max(0, referrers - referral_done)}")
+    print(f"  Awaiting ask-refer:  {max(0, responded - ask_to_refer_done)}")
     print("=" * 50)
     print(f"  Tracking file: {campaign_dir / 'tracking.csv'}")
 
@@ -745,9 +881,12 @@ Workflow:
   2. send     - Send initial messages (creates tracking.csv)
   3.          - Open tracking.csv in Excel, mark responded/interested/referrer
   4. status   - View campaign progress
-  5. followup - Send follow-up to interested contacts
-  6. remind   - Send reminder to non-responders
-  7. referral - Send forwardable message to referrers
+  5. followup  - Send follow-up 1 to interested contacts
+  6. followup2 - Send follow-up 2 (after followup 1)
+  7. followup3 - Send follow-up 3 (after followup 2)
+  8. remind    - Send reminder to non-responders
+  9. referral  - Send forwardable message to referrers
+ 10. askrefer  - Ask all responders to refer others
         """,
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -763,8 +902,16 @@ Workflow:
     send_parser.add_argument("campaign", help="Campaign name")
 
     # followup
-    followup_parser = subparsers.add_parser("followup", help="Send follow-up to responders")
+    followup_parser = subparsers.add_parser("followup", help="Send follow-up 1 to interested contacts")
     followup_parser.add_argument("campaign", help="Campaign name")
+
+    # followup2
+    followup2_parser = subparsers.add_parser("followup2", help="Send follow-up 2 (after followup 1)")
+    followup2_parser.add_argument("campaign", help="Campaign name")
+
+    # followup3
+    followup3_parser = subparsers.add_parser("followup3", help="Send follow-up 3 (after followup 2)")
+    followup3_parser.add_argument("campaign", help="Campaign name")
 
     # remind
     remind_parser = subparsers.add_parser("remind", help="Send reminder to non-responders")
@@ -773,6 +920,10 @@ Workflow:
     # referral
     referral_parser = subparsers.add_parser("referral", help="Send forwardable message to referrers")
     referral_parser.add_argument("campaign", help="Campaign name")
+
+    # askrefer
+    askrefer_parser = subparsers.add_parser("askrefer", help="Ask all responders to refer others")
+    askrefer_parser.add_argument("campaign", help="Campaign name")
 
     # status
     status_parser = subparsers.add_parser("status", help="Show campaign status summary")
@@ -793,10 +944,16 @@ Workflow:
         cmd_send(args.campaign)
     elif args.command == "followup":
         cmd_followup(args.campaign)
+    elif args.command == "followup2":
+        cmd_followup2(args.campaign)
+    elif args.command == "followup3":
+        cmd_followup3(args.campaign)
     elif args.command == "remind":
         cmd_remind(args.campaign)
     elif args.command == "referral":
         cmd_referral(args.campaign)
+    elif args.command == "askrefer":
+        cmd_ask_to_refer(args.campaign)
     elif args.command == "status":
         cmd_status(args.campaign)
 
