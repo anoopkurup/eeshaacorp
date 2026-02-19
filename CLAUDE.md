@@ -9,7 +9,7 @@ WhatsApp Web automation script using Selenium to send personalized messages to m
 ## Architecture
 
 **Single-script automation with campaign-based organization:**
-- `whatsapp_sender.py` - Main script with argparse subcommands (create, send, followup, remind, referral, status)
+- `whatsapp_sender.py` - Main script with argparse subcommands (create, send, followup, followup2, followup3, remind, referral, askrefer, status)
 - `campaigns/` - Directory containing campaign folders, each with its own contacts, templates, and tracking
 
 **Campaign directory structure:**
@@ -17,34 +17,49 @@ WhatsApp Web automation script using Selenium to send personalized messages to m
 campaigns/<campaign_name>/
   contacts.csv       # first_name, phone_number
   message.md         # Initial outreach template ({first_name} placeholder)
-  followup.md        # Template for interested responders
+  followup.md        # Follow-up 1 for interested responders
+  followup2.md       # Follow-up 2 (after followup 1)
+  followup3.md       # Follow-up 3 (after followup 2)
   reminder.md        # Template for non-responders
   referral.md        # Forwardable message for referrers
+  ask_to_refer.md    # Ask responders to refer others
   tracking.csv       # Auto-generated after send; editable in Excel
 ```
 
 **Tracking CSV columns:**
-`first_name, phone_number, status, sent_at, responded, interested, followup_sent, reminder_sent, referrer, referral_sent`
+`first_name, phone_number, status, sent_at, responded, interested, followup_sent, followup2_sent, followup3_sent, reminder_sent, referrer, referral_sent, ask_to_refer_sent, paid`
 
 - `status`: `pending`, `sent`, or `failed`
 - `responded`: `yes` or `no` (manually updated by user in Excel/Sheets)
-- `interested`: `yes` or `no` (manually updated by user — only contacts with `interested=yes` get follow-ups)
+- `interested`: `yes`, `no`, or blank (manually updated — contacts with `interested=no` are excluded from follow-ups; blank is treated as potentially interested)
 - `referrer`: `yes` or empty (manually updated — contacts willing to refer others)
-- `followup_sent` / `reminder_sent` / `referral_sent`: `yes` or `no` (updated by followup/remind/referral commands)
+- `paid`: `yes` or `no` (manually updated — contacts who have paid)
+- `followup_sent` / `followup2_sent` / `followup3_sent`: `yes` or `no` (updated by followup commands)
+- `reminder_sent` / `referral_sent` / `ask_to_refer_sent`: `yes` or `no` (updated by respective commands)
+
+**Follow-up filter logic:**
+- Follow-ups require `responded=yes` AND `interested!=no` (blank interest is included)
+- Follow-up 2 requires followup 1 to be sent first; followup 3 requires followup 2 first
+- Reminders go only to non-responders (`responded!=yes`)
 
 **Key workflow:**
 1. `create` - Set up campaign folder with contacts and templates
 2. `send` - Send initial messages, generates tracking.csv
-3. User opens tracking.csv in Excel, marks `responded=yes`, `interested=yes/no`, `referrer=yes`
-4. `followup` - Send follow-up to contacts with `interested=yes`
-5. `remind` - Send reminder to contacts with `responded=no`
-6. `referral` - Send forwardable message to contacts with `referrer=yes`
-7. `status` - View campaign progress at any time
+3. User opens tracking.csv in Excel, marks `responded=yes`, `interested=yes/no`, `referrer=yes`, `paid=yes`
+4. `followup` - Send follow-up 1 to responders (where interested is not "no")
+5. `followup2` - Send follow-up 2 (after followup 1 sent)
+6. `followup3` - Send follow-up 3 (after followup 2 sent)
+7. `remind` - Send reminder to contacts with `responded!=yes`
+8. `askrefer` - Ask all responders if they'd refer others
+9. `referral` - Send forwardable message to contacts with `referrer=yes`
+10. `status` - View campaign progress at any time
 
 ## Dependencies
 
 Install via:
 ```bash
+python -m venv venv
+source venv/bin/activate   # macOS/Linux
 pip install -r requirements.txt
 ```
 
@@ -53,23 +68,36 @@ Required packages:
 - pandas >=1.3.0 - CSV handling
 - webdriver-manager >=4.0.0 - Auto-downloads/manages ChromeDriver
 
+**Important:** Always activate the virtual environment before running the script:
+```bash
+source venv/bin/activate
+```
+
 ## Running the Script
 
 ```bash
+# Activate virtual environment first
+source venv/bin/activate
+
 # Create a campaign
 python whatsapp_sender.py create workshop_feb --contacts contacts.csv --message message_template.md
 
-# Send initial messages 
+# Send initial messages
 python whatsapp_sender.py send workshop_feb
 
 # Check status
 python whatsapp_sender.py status workshop_feb
 
-# Send follow-up to interested contacts (after marking interested=yes in tracking.csv)
+# Send follow-ups (sequential: 1 → 2 → 3)
 python whatsapp_sender.py followup workshop_feb
+python whatsapp_sender.py followup2 workshop_feb
+python whatsapp_sender.py followup3 workshop_feb
 
 # Send reminder to non-responders
 python whatsapp_sender.py remind workshop_feb
+
+# Ask responders to refer others
+python whatsapp_sender.py askrefer workshop_feb
 
 # Send forwardable message to referrers (after marking referrer=yes in tracking.csv)
 python whatsapp_sender.py referral workshop_feb
