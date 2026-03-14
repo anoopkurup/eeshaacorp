@@ -15,7 +15,7 @@ WhatsApp Web automation script using Selenium to send personalized messages to m
 **Campaign directory structure:**
 ```
 campaigns/<campaign_name>/
-  contacts.csv       # first_name, phone_number
+  contacts.csv       # first_name, last_name, phone_number
   message.md         # Initial outreach template ({first_name} placeholder)
   followup.md        # Follow-up 1 for interested responders
   followup2.md       # Follow-up 2 (after followup 1)
@@ -27,13 +27,14 @@ campaigns/<campaign_name>/
 ```
 
 **Tracking CSV columns:**
-`first_name, phone_number, status, sent_at, responded, interested, followup_sent, followup2_sent, followup3_sent, reminder_sent, referrer, referral_sent, ask_to_refer_sent, paid`
+`first_name, last_name, phone_number, status, sent_at, responded, interested, followup_sent, followup2_sent, followup3_sent, reminder_sent, referrer, referral_sent, ask_to_refer_sent, paid, notes`
 
 - `status`: `pending`, `sent`, or `failed`
 - `responded`: `yes` or `no` (manually updated by user in Excel/Sheets)
 - `interested`: `yes`, `no`, or blank (manually updated — contacts with `interested=no` are excluded from follow-ups; blank is treated as potentially interested)
 - `referrer`: `yes` or empty (manually updated — contacts willing to refer others)
 - `paid`: `yes` or `no` (manually updated — contacts who have paid)
+- `notes`: free-text field for user notes (not used by the script)
 - `followup_sent` / `followup2_sent` / `followup3_sent`: `yes` or `no` (updated by followup commands)
 - `reminder_sent` / `referral_sent` / `ask_to_refer_sent`: `yes` or `no` (updated by respective commands)
 
@@ -124,11 +125,13 @@ Located at top of `whatsapp_sender.py`:
 The script uses multiple fallback CSS selectors for robustness since WhatsApp Web frequently changes their DOM:
 
 **Initial load detection (waits for any of these):**
+- `[data-testid='chat-list']` - Chat list panel
+- `[data-testid='conversation-panel-wrapper']` - Main chat panel
+- `[data-testid='qrcode']` - QR code container
 - `div[contenteditable='true'][data-tab='10']` - Old message input
 - `div[contenteditable='true']` - Generic message input
-- `canvas` / `canvas[aria-label]` - QR code
-- `[data-testid='qrcode']` - QR code container
-- `[data-testid='conversation-panel-wrapper']` - Main chat panel
+- `canvas[aria-label*='QR']` / `canvas[aria-label*='qr']` - QR code canvas
+- `#app .two` / `#side` - Structural selectors
 
 **Send button (tries in order):**
 - `span[data-icon='send']`
@@ -137,10 +140,13 @@ The script uses multiple fallback CSS selectors for robustness since WhatsApp We
 
 If all selectors fail, the script provides debugging info (URL, page title) and continues.
 
-## Phone Number Format
+## Phone Number Handling
 
-- Must include country code (e.g., `+919876543210` for India)
-- Script strips spaces and `+` prefix when constructing WhatsApp Web URL
+- Must include country code (e.g., `919876543210` for India, `18583493572` for US)
+- `normalize_phone()` helper strips `.0` float suffixes and all non-digit characters for consistent comparisons
+- CSVs are read with `dtype={"phone_number": str}` to prevent pandas float conversion
+- `save_tracking()` normalizes phone numbers before writing to prevent `.0` corruption
+- `load_contacts()` drops rows with missing name or empty phone number
 - Invalid/non-WhatsApp numbers will timeout and be marked as failed in tracking.csv
 
 ## Selenium Strategy
@@ -160,7 +166,7 @@ The script implements graceful shutdown via SIGINT (Ctrl+C):
 
 ## Chrome Profile Persistence
 
-The script uses `--user-data-dir={CHROME_PROFILE_DIR}` to maintain WhatsApp Web login state. To force re-login, delete the profile directory:
+The script uses `--user-data-dir={CHROME_PROFILE_DIR}` with `--profile-directory=Default` and `--remote-debugging-port=9222` to maintain WhatsApp Web login state. If Chrome crashes or leaves stale lock files (`SingletonLock`, `SingletonSocket`, `SingletonCookie`), delete them before retrying. To force re-login, delete the profile directory:
 
 ```bash
 rm -rf ~/whatsapp_chrome_profile
@@ -174,3 +180,4 @@ rm -rf ~/whatsapp_chrome_profile
 - **No delivery confirmation:** Script doesn't verify message delivery status
 - **Chrome requirement:** Requires Google Chrome browser installed
 - **Manual response tracking:** User must manually mark responders in tracking.csv (open in Excel/Sheets)
+- **Browser close timing:** A 5-second delay before `driver.quit()` ensures the last message is delivered

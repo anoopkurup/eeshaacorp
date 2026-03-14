@@ -21,3 +21,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Campaign data (contains personal contact info and templates)
+campaigns/
+NewContacts.csv
+maincontactlist.csv
+mainmessagestemp.md
+contacts.csv
+message_template.md

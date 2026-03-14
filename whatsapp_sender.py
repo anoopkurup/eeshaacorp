@@ -64,26 +64,42 @@ MESSAGE_LOAD_TIMEOUT = 10      # seconds to wait for each message to load
 CHROME_PROFILE_DIR = str(Path.home() / "whatsapp_chrome_profile")
 
 TRACKING_COLUMNS = [
-    "first_name", "phone_number", "status", "sent_at",
+    "first_name", "last_name", "phone_number", "status", "sent_at",
     "responded", "interested", "followup_sent", "followup2_sent", "followup3_sent",
-    "reminder_sent", "referrer", "referral_sent", "ask_to_refer_sent", "paid",
+    "reminder_sent", "referrer", "referral_sent", "ask_to_refer_sent", "paid", "notes",
 ]
 
 
 # === CONTACT & TEMPLATE LOADING ===
 
+def normalize_phone(series: pd.Series) -> pd.Series:
+    """Normalize phone numbers: remove +, spaces, parens, dashes, and .0 float suffix."""
+    return (
+        series.astype(str)
+        .str.replace(r"\.0$", "", regex=True)   # float suffix from pandas
+        .str.replace(r"[^\d]", "", regex=True)   # keep only digits
+    )
+
+
 def load_contacts(csv_path: str) -> pd.DataFrame:
     """Load contacts from CSV file."""
-    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    df = pd.read_csv(csv_path, encoding="utf-8-sig", dtype={"phone_number": str})
 
     # Validate required columns
-    required_cols = ["first_name", "phone_number"]
+    required_cols = ["first_name", "last_name", "phone_number"]
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
         raise ValueError(f"CSV missing required columns: {missing}")
 
-    # Clean phone numbers - remove spaces, ensure string type
-    df["phone_number"] = df["phone_number"].astype(str).str.replace(" ", "")
+    # Drop rows with missing first_name or phone_number
+    df = df.dropna(subset=["first_name", "phone_number"])
+
+    # Clean phone numbers - normalize to digits only
+    df["phone_number"] = normalize_phone(df["phone_number"])
+    # Remove rows where phone is empty after normalization
+    df = df[df["phone_number"] != ""]
+    # Fill missing last names with empty string
+    df["last_name"] = df["last_name"].fillna("")
 
     return df
 
@@ -148,18 +164,18 @@ def load_tracking(campaign_dir: Path) -> pd.DataFrame:
     tracking_path = campaign_dir / "tracking.csv"
     if not tracking_path.exists():
         return pd.DataFrame(columns=TRACKING_COLUMNS)
-    df = pd.read_csv(tracking_path, encoding="utf-8-sig")
+    df = pd.read_csv(tracking_path, encoding="utf-8-sig", dtype={"phone_number": str})
     # Ensure all expected columns exist
     for col in TRACKING_COLUMNS:
         if col not in df.columns:
             df[col] = ""
-    df["phone_number"] = df["phone_number"].astype(str).str.replace(" ", "")
+    df["phone_number"] = normalize_phone(df["phone_number"])
     return df
 
 
 def init_tracking(contacts: pd.DataFrame) -> pd.DataFrame:
     """Create initial tracking DataFrame from contacts list."""
-    tracking = contacts[["first_name", "phone_number"]].copy()
+    tracking = contacts[["first_name", "last_name", "phone_number"]].copy()
     tracking["status"] = "pending"
     tracking["sent_at"] = ""
     tracking["responded"] = "no"
@@ -172,18 +188,24 @@ def init_tracking(contacts: pd.DataFrame) -> pd.DataFrame:
     tracking["referral_sent"] = "no"
     tracking["ask_to_refer_sent"] = "no"
     tracking["paid"] = "no"
+    tracking["notes"] = ""
     return tracking
 
 
 def save_tracking(campaign_dir: Path, tracking: pd.DataFrame):
     """Save tracking DataFrame to CSV."""
     tracking_path = campaign_dir / "tracking.csv"
+    # Normalize phone numbers before saving to prevent .0 float suffix
+    tracking = tracking.copy()
+    tracking["phone_number"] = normalize_phone(tracking["phone_number"])
     tracking.to_csv(tracking_path, index=False)
 
 
 def update_tracking_row(tracking: pd.DataFrame, phone_number: str, **kwargs):
     """Update a specific row in tracking by phone number."""
-    mask = tracking["phone_number"].astype(str) == str(phone_number)
+    import re
+    normalized = re.sub(r"[^\d]", "", str(phone_number).replace(".0", ""))
+    mask = normalize_phone(tracking["phone_number"]) == normalized
     for key, value in kwargs.items():
         tracking.loc[mask, key] = value
 
@@ -196,12 +218,14 @@ def create_driver() -> webdriver.Chrome:
 
     # Use a persistent profile to remember WhatsApp login
     options.add_argument(f"--user-data-dir={CHROME_PROFILE_DIR}")
+    options.add_argument("--profile-directory=Default")
 
     # Recommended options for stability
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--remote-debugging-port=9222")
 
     # Auto-download and manage ChromeDriver
     service = Service(ChromeDriverManager().install())
@@ -215,12 +239,15 @@ def wait_for_whatsapp_load(driver: webdriver.Chrome, timeout: int = PAGE_LOAD_TI
 
     # Try multiple selectors since WhatsApp Web changes frequently
     possible_selectors = [
+        "[data-testid='chat-list']",  # Chat list panel
+        "[data-testid='conversation-panel-wrapper']",  # Main chat panel
+        "[data-testid='qrcode']",  # QR code container
         "div[contenteditable='true'][data-tab='10']",  # Old message input
         "div[contenteditable='true']",  # Generic message input
-        "canvas",  # QR code
-        "canvas[aria-label]",  # QR code with aria-label
-        "[data-testid='qrcode']",  # QR code container
-        "[data-testid='conversation-panel-wrapper']",  # Main chat panel
+        "canvas[aria-label*='QR']",  # QR code canvas
+        "canvas[aria-label*='qr']",  # QR code canvas (lowercase)
+        "#app .two",  # Main app loaded
+        "#side",  # Side panel (chat list)
     ]
 
     selector = ", ".join(possible_selectors)
@@ -246,8 +273,9 @@ def send_message(driver: webdriver.Chrome, phone_number: str, message: str) -> b
     # URL-encode the message to handle special characters and newlines
     encoded_message = urllib.parse.quote(message)
 
-    # Remove any '+' prefix for the URL (WhatsApp expects numbers without '+')
-    clean_number = phone_number.lstrip("+")
+    # Remove non-digit characters for the URL (WhatsApp expects digits only)
+    import re
+    clean_number = re.sub(r"[^\d]", "", str(phone_number))
 
     # Navigate to WhatsApp Web with pre-filled message
     url = f"https://web.whatsapp.com/send?phone={clean_number}&text={encoded_message}"
@@ -280,8 +308,8 @@ def send_message(driver: webdriver.Chrome, phone_number: str, message: str) -> b
         # Click send immediately
         send_button.click()
 
-        # Brief wait to confirm message sent
-        time.sleep(0.5)
+        # Wait for message to be sent (check for double-tick or message disappearing from input)
+        time.sleep(2)
 
         return True
 
@@ -321,7 +349,7 @@ def cmd_create(campaign_name: str, contacts_path: str = None, message_path: str 
         print(f"   Copied contacts from {contacts_path} ({len(df)} contacts)")
     else:
         with open(campaign_dir / "contacts.csv", "w") as f:
-            f.write("first_name,phone_number\n")
+            f.write("first_name,last_name,phone_number\n")
         print(f"   Created empty contacts.csv (add your contacts)")
 
     # Copy message template if provided
@@ -388,8 +416,8 @@ def cmd_send(campaign_name: str):
         tracking = init_tracking(contacts)
     else:
         # Merge: add any new contacts not yet in tracking
-        existing_phones = set(tracking["phone_number"].astype(str))
-        new_contacts = contacts[~contacts["phone_number"].astype(str).isin(existing_phones)]
+        existing_phones = set(normalize_phone(tracking["phone_number"]))
+        new_contacts = contacts[~normalize_phone(contacts["phone_number"]).isin(existing_phones)]
         if len(new_contacts) > 0:
             new_tracking = init_tracking(new_contacts)
             tracking = pd.concat([tracking, new_tracking], ignore_index=True)
@@ -434,10 +462,12 @@ def cmd_send(campaign_name: str):
                 break
 
             first_name = row["first_name"]
+            last_name = row.get("last_name", "")
             phone = row["phone_number"]
             sent_this_run += 1
 
-            print(f"[{sent_this_run}/{pending_count}] Sending to {first_name} ({phone})...")
+            display_name = f"{first_name} {last_name}".strip()
+            print(f"[{sent_this_run}/{pending_count}] Sending to {display_name} ({phone})...")
 
             message = personalize_message(template, first_name)
 
@@ -466,7 +496,9 @@ def cmd_send(campaign_name: str):
                     time.sleep(1)
 
     finally:
-        print("\n🔒 Closing browser...")
+        print("\n⏳ Waiting 5s for last message to deliver...")
+        time.sleep(5)
+        print("🔒 Closing browser...")
         driver.quit()
         save_tracking(campaign_dir, tracking)
 
@@ -523,10 +555,12 @@ def cmd_followup(campaign_name: str):
                 break
 
             first_name = row["first_name"]
+            last_name = row.get("last_name", "")
             phone = row["phone_number"]
             count += 1
 
-            print(f"[{count}/{len(to_followup)}] Follow-up to {first_name} ({phone})...")
+            display_name = f"{first_name} {last_name}".strip()
+            print(f"[{count}/{len(to_followup)}] Follow-up to {display_name} ({phone})...")
 
             message = personalize_message(template, first_name)
 
@@ -548,7 +582,9 @@ def cmd_followup(campaign_name: str):
                     time.sleep(1)
 
     finally:
-        print("\n🔒 Closing browser...")
+        print("\n⏳ Waiting 5s for last message to deliver...")
+        time.sleep(5)
+        print("🔒 Closing browser...")
         driver.quit()
         save_tracking(campaign_dir, tracking)
 
@@ -601,10 +637,12 @@ def cmd_remind(campaign_name: str):
                 break
 
             first_name = row["first_name"]
+            last_name = row.get("last_name", "")
             phone = row["phone_number"]
             count += 1
 
-            print(f"[{count}/{len(to_remind)}] Reminder to {first_name} ({phone})...")
+            display_name = f"{first_name} {last_name}".strip()
+            print(f"[{count}/{len(to_remind)}] Reminder to {display_name} ({phone})...")
 
             message = personalize_message(template, first_name)
 
@@ -626,7 +664,9 @@ def cmd_remind(campaign_name: str):
                     time.sleep(1)
 
     finally:
-        print("\n🔒 Closing browser...")
+        print("\n⏳ Waiting 5s for last message to deliver...")
+        time.sleep(5)
+        print("🔒 Closing browser...")
         driver.quit()
         save_tracking(campaign_dir, tracking)
 
@@ -672,10 +712,12 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
                 break
 
             first_name = row["first_name"]
+            last_name = row.get("last_name", "")
             phone = row["phone_number"]
             count += 1
 
-            print(f"[{count}/{len(to_send)}] {label} to {first_name} ({phone})...")
+            display_name = f"{first_name} {last_name}".strip()
+            print(f"[{count}/{len(to_send)}] {label} to {display_name} ({phone})...")
 
             message = personalize_message(template, first_name)
 
@@ -697,7 +739,9 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
                     time.sleep(1)
 
     finally:
-        print("\n🔒 Closing browser...")
+        print("\n⏳ Waiting 5s for last message to deliver...")
+        time.sleep(5)
+        print("🔒 Closing browser...")
         driver.quit()
         save_tracking(campaign_dir, tracking)
 
@@ -783,10 +827,12 @@ def cmd_referral(campaign_name: str):
                 break
 
             first_name = row["first_name"]
+            last_name = row.get("last_name", "")
             phone = row["phone_number"]
             count += 1
 
-            print(f"[{count}/{len(to_refer)}] Referral to {first_name} ({phone})...")
+            display_name = f"{first_name} {last_name}".strip()
+            print(f"[{count}/{len(to_refer)}] Referral to {display_name} ({phone})...")
 
             message = personalize_message(template, first_name)
 
@@ -808,7 +854,9 @@ def cmd_referral(campaign_name: str):
                     time.sleep(1)
 
     finally:
-        print("\n🔒 Closing browser...")
+        print("\n⏳ Waiting 5s for last message to deliver...")
+        time.sleep(5)
+        print("🔒 Closing browser...")
         driver.quit()
         save_tracking(campaign_dir, tracking)
 
