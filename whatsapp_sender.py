@@ -66,7 +66,7 @@ CHROME_PROFILE_DIR = str(Path.home() / "whatsapp_chrome_profile")
 TRACKING_COLUMNS = [
     "first_name", "last_name", "phone_number", "status", "sent_at",
     "responded", "interested", "followup_sent", "followup2_sent", "followup3_sent",
-    "reminder_sent", "referrer", "referral_sent", "ask_to_refer_sent", "paid", "notes",
+    "reminder_sent", "referrer", "referral_sent", "ask_to_refer_sent", "paid", "locked", "notes",
 ]
 
 
@@ -188,6 +188,7 @@ def init_tracking(contacts: pd.DataFrame) -> pd.DataFrame:
     tracking["referral_sent"] = "no"
     tracking["ask_to_refer_sent"] = "no"
     tracking["paid"] = "no"
+    tracking["locked"] = ""
     tracking["notes"] = ""
     return tracking
 
@@ -423,8 +424,11 @@ def cmd_send(campaign_name: str):
             tracking = pd.concat([tracking, new_tracking], ignore_index=True)
             print(f"   Added {len(new_contacts)} new contacts to tracking")
 
-    # Filter to only pending contacts
-    pending_mask = tracking["status"] == "pending"
+    # Normalize blank status to "pending" (handles manually edited tracking.csv)
+    tracking["status"] = tracking["status"].fillna("").replace("", "pending")
+
+    # Filter to only pending, non-locked contacts
+    pending_mask = (tracking["status"] == "pending") & (tracking["locked"].astype(str).str.lower() != "yes")
     pending_count = pending_mask.sum()
     already_done = len(tracking) - pending_count
 
@@ -455,6 +459,8 @@ def cmd_send(campaign_name: str):
 
         for idx, row in tracking.iterrows():
             if row["status"] != "pending":
+                continue
+            if str(row.get("locked", "")).lower() == "yes":
                 continue
 
             if shutdown_requested:
@@ -524,11 +530,12 @@ def cmd_followup(campaign_name: str):
 
     template = load_campaign_template(campaign_dir, "followup.md")
 
-    # Filter: responded=yes AND interested!=no AND followup_sent!=yes
+    # Filter: responded=yes AND interested!=no AND followup_sent!=yes AND locked!=yes
     to_followup = tracking[
         (tracking["responded"].astype(str).str.lower() == "yes") &
         (tracking["interested"].astype(str).str.lower() != "no") &
-        (tracking["followup_sent"].astype(str).str.lower() != "yes")
+        (tracking["followup_sent"].astype(str).str.lower() != "yes") &
+        (tracking["locked"].astype(str).str.lower() != "yes")
     ]
 
     if len(to_followup) == 0:
@@ -606,11 +613,12 @@ def cmd_remind(campaign_name: str):
 
     template = load_campaign_template(campaign_dir, "reminder.md")
 
-    # Filter: status=sent AND responded=no AND reminder_sent!=yes
+    # Filter: status=sent AND responded=no AND reminder_sent!=yes AND locked!=yes
     to_remind = tracking[
         (tracking["status"] == "sent") &
         (tracking["responded"].astype(str).str.lower() == "no") &
-        (tracking["reminder_sent"].astype(str).str.lower() != "yes")
+        (tracking["reminder_sent"].astype(str).str.lower() != "yes") &
+        (tracking["locked"].astype(str).str.lower() != "yes")
     ]
 
     if len(to_remind) == 0:
@@ -756,7 +764,8 @@ def cmd_followup2(campaign_name: str):
             (tracking["responded"].astype(str).str.lower() == "yes") &
             (tracking["interested"].astype(str).str.lower() != "no") &
             (tracking["followup_sent"].astype(str).str.lower() == "yes") &
-            (tracking["followup2_sent"].astype(str).str.lower() != "yes")
+            (tracking["followup2_sent"].astype(str).str.lower() != "yes") &
+            (tracking["locked"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "followup2.md", filter_fn, "followup2_sent", "Follow-up 2")
 
@@ -768,7 +777,8 @@ def cmd_followup3(campaign_name: str):
             (tracking["responded"].astype(str).str.lower() == "yes") &
             (tracking["interested"].astype(str).str.lower() != "no") &
             (tracking["followup2_sent"].astype(str).str.lower() == "yes") &
-            (tracking["followup3_sent"].astype(str).str.lower() != "yes")
+            (tracking["followup3_sent"].astype(str).str.lower() != "yes") &
+            (tracking["locked"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "followup3.md", filter_fn, "followup3_sent", "Follow-up 3")
 
@@ -778,7 +788,8 @@ def cmd_ask_to_refer(campaign_name: str):
     def filter_fn(tracking):
         return tracking[
             (tracking["responded"].astype(str).str.lower() == "yes") &
-            (tracking["ask_to_refer_sent"].astype(str).str.lower() != "yes")
+            (tracking["ask_to_refer_sent"].astype(str).str.lower() != "yes") &
+            (tracking["locked"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "ask_to_refer.md", filter_fn, "ask_to_refer_sent", "Ask to refer")
 
@@ -797,10 +808,11 @@ def cmd_referral(campaign_name: str):
 
     template = load_campaign_template(campaign_dir, "referral.md")
 
-    # Filter: referrer=yes AND referral_sent!=yes
+    # Filter: referrer=yes AND referral_sent!=yes AND locked!=yes
     to_refer = tracking[
         (tracking["referrer"].astype(str).str.lower() == "yes") &
-        (tracking["referral_sent"].astype(str).str.lower() != "yes")
+        (tracking["referral_sent"].astype(str).str.lower() != "yes") &
+        (tracking["locked"].astype(str).str.lower() != "yes")
     ]
 
     if len(to_refer) == 0:
