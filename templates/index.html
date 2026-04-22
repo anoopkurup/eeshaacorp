@@ -262,29 +262,21 @@
         📤 Send Initial
         <span class="badge" id="badge-send">0</span>
       </button>
-      <button class="btn-ghost" data-cmd="followup">
-        💬 Follow-up 1
-        <span class="badge" id="badge-followup">0</span>
+      <button class="btn-warn" data-cmd="remind1">
+        🔔 Reminder 1
+        <span class="badge" id="badge-remind1">0</span>
       </button>
-      <button class="btn-ghost" data-cmd="followup2">
-        💬 Follow-up 2
-        <span class="badge" id="badge-followup2">0</span>
+      <button class="btn-warn" data-cmd="remind2">
+        🔔 Reminder 2
+        <span class="badge" id="badge-remind2">0</span>
       </button>
-      <button class="btn-ghost" data-cmd="followup3">
-        💬 Follow-up 3
-        <span class="badge" id="badge-followup3">0</span>
+      <button class="btn-warn" data-cmd="remind3">
+        🔔 Reminder 3
+        <span class="badge" id="badge-remind3">0</span>
       </button>
-      <button class="btn-warn" data-cmd="remind">
-        🔔 Reminder
-        <span class="badge" id="badge-remind">0</span>
-      </button>
-      <button class="btn-create" data-cmd="askrefer">
-        🙋 Ask to Refer
-        <span class="badge" id="badge-askrefer">0</span>
-      </button>
-      <button class="btn-create" data-cmd="referral">
-        🔗 Send Referral
-        <span class="badge" id="badge-referral">0</span>
+      <button class="btn-danger" data-cmd="remind_final">
+        🚨 Final Reminder
+        <span class="badge" id="badge-remind_final">0</span>
       </button>
     </div>
     <p style="font-size:.75rem;color:#aaa;margin-top:12px">
@@ -335,21 +327,17 @@
   // ── Stats ──────────────────────────────────────────────────────────────────
   function renderStats(stats) {
     const tiles = [
-      { key: 'total',             label: 'Total' },
-      { key: 'sent',              label: 'Sent' },
-      { key: 'failed',            label: 'Failed' },
-      { key: 'pending',           label: 'Pending' },
-      { key: 'responded',         label: 'Responded' },
-      { key: 'interested',        label: 'Interested' },
-      { key: 'not_interested',    label: 'Not Interested' },
-      { key: 'paid',              label: 'Paid' },
-      { key: 'followup_done',     label: 'Follow-up 1' },
-      { key: 'followup2_done',    label: 'Follow-up 2' },
-      { key: 'followup3_done',    label: 'Follow-up 3' },
-      { key: 'reminder_done',     label: 'Reminders' },
-      { key: 'ask_to_refer_done', label: 'Ask to Refer' },
-      { key: 'referrers',         label: 'Referrers' },
-      { key: 'referral_done',     label: 'Referrals Sent' },
+      { key: 'total',               label: 'Total' },
+      { key: 'sent',                label: 'Sent' },
+      { key: 'failed',              label: 'Failed' },
+      { key: 'pending',             label: 'Pending' },
+      { key: 'submitted',           label: 'Submitted' },
+      { key: 'pending_submission',  label: 'Pending Submit' },
+      { key: 'paid',                label: 'Paid' },
+      { key: 'reminder1_done',      label: 'Reminder 1' },
+      { key: 'reminder2_done',      label: 'Reminder 2' },
+      { key: 'reminder3_done',      label: 'Reminder 3' },
+      { key: 'reminder_final_done', label: 'Final Remind' },
     ];
     statGrid.innerHTML = tiles.map(t =>
       `<div class="stat-tile">

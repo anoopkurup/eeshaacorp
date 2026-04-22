@@ -13,13 +13,11 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 os.chdir(Path(__file__).parent)
 
 from whatsapp_sender import (
-    cmd_ask_to_refer,
     cmd_create,
-    cmd_followup,
-    cmd_followup2,
-    cmd_followup3,
-    cmd_referral,
-    cmd_remind,
+    cmd_remind1,
+    cmd_remind2,
+    cmd_remind3,
+    cmd_remind_final,
     cmd_send,
     list_campaigns,
     load_tracking,
@@ -95,103 +93,65 @@ def _button_counts(tracking):
     """
     df = tracking
     not_locked = ~_yes(df, "locked")
-
-    # send: status=pending AND not locked
-    send_eligible = ((df["status"] == "pending") & not_locked).sum()
-
-    # followup: responded=yes AND interested!=no AND followup_sent!=yes AND not locked
-    fu1_eligible = (
-        _yes(df, "responded")
-        & ~_no(df, "interested")
-        & ~_yes(df, "followup_sent")
-        & not_locked
-    ).sum()
-
-    # followup2: responded=yes AND interested!=no AND followup_sent=yes AND followup2_sent!=yes AND not locked
-    fu2_eligible = (
-        _yes(df, "responded")
-        & ~_no(df, "interested")
-        & _yes(df, "followup_sent")
-        & ~_yes(df, "followup2_sent")
-        & not_locked
-    ).sum()
-
-    # followup3: responded=yes AND interested!=no AND followup2_sent=yes AND followup3_sent!=yes AND not locked
-    fu3_eligible = (
-        _yes(df, "responded")
-        & ~_no(df, "interested")
-        & _yes(df, "followup2_sent")
-        & ~_yes(df, "followup3_sent")
-        & not_locked
-    ).sum()
-
-    # remind: status=sent AND responded=no AND reminder_sent!=yes AND not locked
-    remind_eligible = (
-        (df["status"] == "sent")
-        & _no(df, "responded")
-        & ~_yes(df, "reminder_sent")
-        & not_locked
-    ).sum()
-
-    # askrefer: responded=yes AND ask_to_refer_sent!=yes AND not locked
-    askrefer_eligible = (
-        _yes(df, "responded")
-        & ~_yes(df, "ask_to_refer_sent")
-        & not_locked
-    ).sum()
-
-    # referral: referrer=yes AND referral_sent!=yes AND not locked
-    referral_eligible = (
-        _yes(df, "referrer")
-        & ~_yes(df, "referral_sent")
-        & not_locked
-    ).sum()
+    not_submitted = ~_yes(df, "submitted")
 
     return {
-        "send":      int(send_eligible),
-        "followup":  int(fu1_eligible),
-        "followup2": int(fu2_eligible),
-        "followup3": int(fu3_eligible),
-        "remind":    int(remind_eligible),
-        "askrefer":  int(askrefer_eligible),
-        "referral":  int(referral_eligible),
+        "send":         int(((df["status"] == "pending") & not_locked).sum()),
+        "remind1":      int((
+            (df["status"] == "sent")
+            & not_submitted
+            & ~_yes(df, "reminder1_sent")
+            & not_locked
+        ).sum()),
+        "remind2":      int((
+            _yes(df, "reminder1_sent")
+            & not_submitted
+            & ~_yes(df, "reminder2_sent")
+            & not_locked
+        ).sum()),
+        "remind3":      int((
+            _yes(df, "reminder2_sent")
+            & not_submitted
+            & ~_yes(df, "reminder3_sent")
+            & not_locked
+        ).sum()),
+        "remind_final": int((
+            _yes(df, "reminder3_sent")
+            & not_submitted
+            & ~_yes(df, "reminder_final_sent")
+            & not_locked
+        ).sum()),
     }
 
 
 def _campaign_stats(tracking):
     df = tracking
     sent = int((df["status"] == "sent").sum())
-    responded = int(_yes(df, "responded").sum())
+    submitted = int(_yes(df, "submitted").sum())
     return {
-        "total":             len(df),
-        "sent":              sent,
-        "failed":            int((df["status"] == "failed").sum()),
-        "pending":           int((df["status"] == "pending").sum()),
-        "responded":         responded,
-        "interested":        int(_yes(df, "interested").sum()),
-        "not_interested":    int(_no(df, "interested").sum()),
-        "paid":              int(_yes(df, "paid").sum()),
-        "followup_done":     int(_yes(df, "followup_sent").sum()),
-        "followup2_done":    int(_yes(df, "followup2_sent").sum()),
-        "followup3_done":    int(_yes(df, "followup3_sent").sum()),
-        "reminder_done":     int(_yes(df, "reminder_sent").sum()),
-        "referrers":         int(_yes(df, "referrer").sum()),
-        "referral_done":     int(_yes(df, "referral_sent").sum()),
-        "ask_to_refer_done": int(_yes(df, "ask_to_refer_sent").sum()),
+        "total":               len(df),
+        "sent":                sent,
+        "failed":              int((df["status"] == "failed").sum()),
+        "pending":             int((df["status"] == "pending").sum()),
+        "paid":                int(_yes(df, "paid").sum()),
+        "submitted":           submitted,
+        "pending_submission":  max(0, sent - submitted),
+        "reminder1_done":      int(_yes(df, "reminder1_sent").sum()),
+        "reminder2_done":      int(_yes(df, "reminder2_sent").sum()),
+        "reminder3_done":      int(_yes(df, "reminder3_sent").sum()),
+        "reminder_final_done": int(_yes(df, "reminder_final_sent").sum()),
     }
 
 
 _EMPTY_STATS = {
-    "total": 0, "sent": 0, "failed": 0, "pending": 0,
-    "responded": 0, "interested": 0, "not_interested": 0, "paid": 0,
-    "followup_done": 0, "followup2_done": 0, "followup3_done": 0,
-    "reminder_done": 0, "referrers": 0, "referral_done": 0,
-    "ask_to_refer_done": 0,
+    "total": 0, "sent": 0, "failed": 0, "pending": 0, "paid": 0,
+    "submitted": 0, "pending_submission": 0,
+    "reminder1_done": 0, "reminder2_done": 0,
+    "reminder3_done": 0, "reminder_final_done": 0,
 }
 
 _EMPTY_COUNTS = {
-    "send": 0, "followup": 0, "followup2": 0, "followup3": 0,
-    "remind": 0, "askrefer": 0, "referral": 0,
+    "send": 0, "remind1": 0, "remind2": 0, "remind3": 0, "remind_final": 0,
 }
 
 
@@ -242,13 +202,11 @@ def api_status(campaign):
 @app.route("/api/run/<campaign>/<cmd>", methods=["POST"])
 def api_run(campaign, cmd):
     cmd_map = {
-        "send":      cmd_send,
-        "followup":  cmd_followup,
-        "followup2": cmd_followup2,
-        "followup3": cmd_followup3,
-        "remind":    cmd_remind,
-        "askrefer":  cmd_ask_to_refer,
-        "referral":  cmd_referral,
+        "send":         cmd_send,
+        "remind1":      cmd_remind1,
+        "remind2":      cmd_remind2,
+        "remind3":      cmd_remind3,
+        "remind_final": cmd_remind_final,
     }
     if cmd not in cmd_map:
         return jsonify({"error": f"Unknown command: {cmd}"}), 400
