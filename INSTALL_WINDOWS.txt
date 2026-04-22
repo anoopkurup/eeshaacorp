@@ -1,0 +1,581 @@
+================================================================
+  WHATSAPP CAMPAIGN TOOL - INSTALLATION GUIDE FOR WINDOWS
+================================================================
+
+Hello! This guide will help you install and run the WhatsApp campaign
+tool on your Windows computer, even if you have never used the
+terminal or git before.
+
+You only need to do PART A once (installation).
+After that, you'll only use PART B (running the app).
+
+If you run into trouble, jump to PART D (troubleshooting) at the
+bottom of this file.
+
+Total time for first-time setup: about 20-30 minutes.
+
+
+================================================================
+  WHAT THIS APP DOES
+================================================================
+
+This tool sends personalized WhatsApp messages to a list of contacts,
+keeps track of who responded, and helps you send follow-ups and
+reminders. It uses your own WhatsApp account - the same way you log
+into WhatsApp Web from a browser.
+
+Important: Your phone must be connected to the internet while the
+tool is sending messages, because WhatsApp Web relays through it.
+
+
+================================================================
+  PART A: ONE-TIME SETUP
+================================================================
+
+You only need to do this PART ONCE on your computer.
+
+
+----------------------------------------------------------------
+  STEP 1: Install Google Chrome
+----------------------------------------------------------------
+
+The tool needs Google Chrome. Most people already have it. To check:
+
+  1. Press the Windows key on your keyboard.
+  2. Type: Chrome
+  3. If "Google Chrome" appears, skip to Step 2.
+
+If Chrome is NOT installed:
+
+  1. Open Microsoft Edge (or any browser).
+  2. Go to:  https://www.google.com/chrome/
+  3. Click "Download Chrome".
+  4. Once downloaded, run the installer (double-click
+     ChromeSetup.exe in your Downloads folder).
+  5. Follow the prompts. It will install automatically.
+
+
+----------------------------------------------------------------
+  STEP 2: Install Python
+----------------------------------------------------------------
+
+Python is the programming language this tool is written in. You need
+to install it once.
+
+  1. Open your web browser.
+  2. Go to:  https://www.python.org/downloads/
+  3. You will see a big yellow/gray button that says
+     "Download Python 3.12.x" (the number after 3.12 may vary -
+     that is fine). Click it.
+  4. When the file finishes downloading (it will be called
+     something like python-3.12.x-amd64.exe), go to your
+     Downloads folder and DOUBLE-CLICK it.
+
+  *** VERY IMPORTANT ***
+  Before clicking "Install Now", look at the BOTTOM of the
+  installer window. You will see a small checkbox that says:
+
+       [ ] Add python.exe to PATH
+
+  >>> CHECK THIS BOX! <<<
+
+  If you skip this, nothing else in this guide will work and
+  you will have to uninstall and reinstall Python.
+
+  5. After checking the box, click "Install Now".
+  6. Wait for the installer to finish (1-2 minutes).
+  7. When it says "Setup was successful", click "Close".
+
+
+----------------------------------------------------------------
+  STEP 3: Download the App
+----------------------------------------------------------------
+
+  1. Open your web browser.
+  2. Go to:  https://github.com/anoopkurup/eeshaacorp
+  3. Near the top right of the file list, you will see a big
+     green button that says "<> Code". Click it.
+  4. A small menu will drop down. Click "Download ZIP" at the
+     bottom of that menu.
+  5. The file "eeshaacorp-main.zip" will download to your
+     Downloads folder.
+  6. Open your Downloads folder (press Windows key + E, then
+     click "Downloads" on the left side).
+  7. RIGHT-CLICK the file "eeshaacorp-main.zip".
+  8. Click "Extract All..."
+  9. A window will open asking where to extract. Click "Browse"
+     and choose a place you will remember. A good choice is:
+        This PC  >  Documents
+     Click "Select Folder".
+  10. Click "Extract".
+  11. When it finishes, a new folder called "eeshaacorp-main"
+      will appear in Documents. This folder contains the app.
+
+  NOTE: You can rename "eeshaacorp-main" to something simpler
+  like "WhatsAppTool" if you prefer. If you do, remember the
+  new name for Step 4.
+
+
+----------------------------------------------------------------
+  STEP 4: Install the App's Requirements
+----------------------------------------------------------------
+
+Now we'll tell Python to install the pieces the app needs to run.
+This sounds scary but is just copy-paste.
+
+  1. Open File Explorer (Windows key + E).
+  2. Go to:  Documents  >  eeshaacorp-main
+     (or whatever you renamed the folder to)
+  3. Click once on the ADDRESS BAR at the top of the window
+     (the bar that shows the folder path).
+  4. The address will turn into text you can edit. SELECT ALL of
+     it (Ctrl+A) and DELETE it.
+  5. Type exactly this and press Enter:
+
+        powershell
+
+     A dark blue or black window will open. This is PowerShell.
+     It is waiting for you to type commands. The text cursor is
+     already at the end of a line that looks something like:
+
+        PS C:\Users\YourName\Documents\eeshaacorp-main>
+
+     Good - that means you are "in" the app's folder.
+
+  6. Type this EXACTLY and press Enter:
+
+        py -m venv venv
+
+     This creates a private Python workspace for the app. It
+     takes 10-20 seconds. When it finishes, the prompt returns
+     (the PS C:\... line appears again).
+
+  7. Type this EXACTLY and press Enter:
+
+        venv\Scripts\Activate.ps1
+
+     If you see a red error about "running scripts is disabled"
+     or "execution policy", see TROUBLESHOOTING item 1 below,
+     fix it, and come back to this step.
+
+     If it worked, the prompt will now START with "(venv)" -
+     something like:
+
+        (venv) PS C:\Users\YourName\Documents\eeshaacorp-main>
+
+     That "(venv)" is how you know the private workspace is
+     active.
+
+  8. Type this EXACTLY and press Enter:
+
+        pip install -r requirements.txt
+
+     This downloads and installs the software libraries the app
+     needs. It takes 2-5 minutes. You will see lots of text
+     scroll by - that is normal. When it finishes, you'll see
+     something like:
+
+        Successfully installed ...
+
+     and the prompt returns.
+
+  9. Close the PowerShell window. Setup is done!
+     (You can also leave it open and skip to PART B step 2.)
+
+
+================================================================
+  PART B: RUNNING THE APP
+================================================================
+
+Do this every time you want to use the tool.
+
+
+----------------------------------------------------------------
+  STEP 1: Open the App's Folder in PowerShell
+----------------------------------------------------------------
+
+  1. Open File Explorer (Windows key + E).
+  2. Go to:  Documents  >  eeshaacorp-main
+  3. Click the address bar, delete what's there, type:
+
+        powershell
+
+     and press Enter. A PowerShell window opens in the folder.
+
+
+----------------------------------------------------------------
+  STEP 2: Activate the Workspace
+----------------------------------------------------------------
+
+Type this and press Enter:
+
+        venv\Scripts\Activate.ps1
+
+The prompt should now start with "(venv)".
+
+
+----------------------------------------------------------------
+  STEP 3: Start the App
+----------------------------------------------------------------
+
+Type this and press Enter:
+
+        python app.py
+
+You should see something like:
+
+         * Running on http://127.0.0.1:5000
+         * Press CTRL+C to quit
+
+LEAVE THIS WINDOW OPEN. Do not close it while using the app - it
+is the engine running in the background. Minimize it if it is in
+the way.
+
+
+----------------------------------------------------------------
+  STEP 4: Open the App in Your Browser
+----------------------------------------------------------------
+
+  1. Open Google Chrome.
+  2. In the address bar, type:
+
+        http://localhost:5000
+
+     and press Enter.
+  3. The app's web page appears. You'll see a campaign selector
+     and a row of buttons (Send, Follow-up, Reminder, etc.).
+
+
+----------------------------------------------------------------
+  STEP 5: Create a Campaign
+----------------------------------------------------------------
+
+A "campaign" is one outreach job - one set of contacts and one
+message template.
+
+  1. On the app page, find the "New campaign" area (look for a
+     button or form labeled "Create" or similar).
+  2. Enter a short name for the campaign, using only letters,
+     numbers, dashes, or underscores (example: "workshop_feb",
+     "may_outreach", "customers_2025"). No spaces.
+  3. Click "Create".
+
+The app creates a folder at:
+
+     Documents\eeshaacorp-main\campaigns\<your-campaign-name>\
+
+Inside that folder, it has placed starter files you need to edit:
+
+     contacts.csv         (your list of people)
+     message.md           (your initial message)
+     followup.md          (follow-up 1)
+     followup2.md         (follow-up 2)
+     followup3.md         (follow-up 3)
+     reminder.md          (reminder to non-responders)
+     ask_to_refer.md      (ask responders to refer others)
+     referral.md          (forwardable message for referrers)
+
+
+----------------------------------------------------------------
+  STEP 6: Add Your Contacts
+----------------------------------------------------------------
+
+  1. Open File Explorer, go to the campaign folder from Step 5.
+  2. DOUBLE-CLICK "contacts.csv" to open it in Excel (or
+     right-click > Open with > Excel).
+  3. You will see three columns:
+
+        first_name | last_name | phone_number
+
+  4. Fill in your contacts, ONE PER ROW. Example:
+
+        first_name | last_name | phone_number
+        Priya      | Sharma    | 919876543210
+        John       | Smith     | 14155551234
+
+  5. IMPORTANT about phone numbers:
+     - Include the COUNTRY CODE at the start.
+     - India numbers: start with 91 (e.g. 919876543210)
+     - US numbers: start with 1 (e.g. 14155551234)
+     - UK numbers: start with 44
+     - No spaces, no dashes, no plus sign, just digits.
+
+  6. When done, save the file (File > Save) and close Excel.
+     If Excel asks about keeping the CSV format, say YES / Keep.
+
+
+----------------------------------------------------------------
+  STEP 7: Write Your Message Template
+----------------------------------------------------------------
+
+  1. In the same campaign folder, RIGHT-CLICK "message.md" and
+     choose "Open with" > "Notepad".
+  2. Type the message you want to send. You can use the
+     placeholder {first_name} and it will be replaced with each
+     person's first name. Example:
+
+        Hi {first_name},
+
+        I wanted to share something I thought you'd find
+        useful...
+
+        - Anoop
+
+  3. Save the file (File > Save) and close Notepad.
+
+  4. You can edit followup.md, reminder.md, etc. the same way.
+     You don't have to write all of them upfront - you only need
+     the ones for the buttons you plan to press.
+
+
+----------------------------------------------------------------
+  STEP 8: Send the First Messages
+----------------------------------------------------------------
+
+  1. Go back to your browser tab (http://localhost:5000).
+  2. In the campaign selector, choose the campaign you created.
+  3. Click the "Send" button.
+
+*** FIRST TIME ONLY: WhatsApp Web Login ***
+
+A new Chrome window will open automatically and go to
+WhatsApp Web. You'll see a QR code.
+
+  1. Pick up your phone.
+  2. Open WhatsApp on the phone.
+  3. Go to:  Settings > Linked Devices > Link a Device
+     (on Android: More menu > Linked Devices)
+  4. Point your phone camera at the QR code on your computer
+     screen.
+  5. Once it connects, the WhatsApp Web chat list appears.
+  6. The tool will start sending automatically. Leave it alone!
+
+You do NOT need to scan the QR code again next time. The tool
+remembers your login.
+
+*** WHILE MESSAGES ARE SENDING ***
+
+- You'll see live progress in the browser: "[1/42] Sending to
+  Priya Sharma...", "Sent successfully", etc.
+- There is a "Stop" button at the top if you need to stop
+  partway. It finishes the current message, saves progress, and
+  exits cleanly.
+- Do not touch the Chrome window the tool is using - it drives
+  it automatically.
+- You can use your computer for other things - another browser
+  window, Word, email, etc.
+
+*** WHEN FINISHED ***
+
+The tool shows a summary (how many sent, how many failed).
+The Chrome window closes automatically after a few seconds.
+
+
+----------------------------------------------------------------
+  STEP 9: Track Responses and Send Follow-ups
+----------------------------------------------------------------
+
+After some people reply, open the tracking file:
+
+     Documents\eeshaacorp-main\campaigns\<your-campaign>\tracking.csv
+
+Open it in Excel. You'll see columns for each contact:
+
+  status             - sent / failed / pending (auto-managed)
+  responded          - YOU fill in: yes / no
+  interested         - YOU fill in: yes / no / blank
+  followup_sent      - auto
+  reminder_sent      - auto
+  paid               - YOU fill in: yes / no
+  referrer           - YOU fill in: yes (if they'll refer others)
+  notes              - free text for your own notes
+
+To send follow-ups:
+  1. In Excel, mark "yes" in the "responded" column for anyone
+     who replied to your first message. Save.
+  2. Back in the browser, click the "Follow-up" button.
+  3. Only people marked responded=yes AND not responded
+     interested=no will get a follow-up.
+
+Similar logic for "Follow-up 2", "Follow-up 3", "Reminder",
+"Ask to refer", and "Referral" buttons. Each button tells you
+how many contacts are eligible right now.
+
+
+----------------------------------------------------------------
+  STEP 10: Shut Down When Finished
+----------------------------------------------------------------
+
+  1. Close the browser tab.
+  2. Go back to the PowerShell window that says "Running on
+     http://127.0.0.1:5000".
+  3. Click inside that window and press Ctrl+C.
+  4. Close the PowerShell window.
+
+You're done!
+
+
+================================================================
+  PART C: DAILY USE (AFTER FIRST SETUP)
+================================================================
+
+After Part A is complete, your daily workflow is just:
+
+  1. Open File Explorer > Documents > eeshaacorp-main
+  2. Click address bar, type "powershell", Enter
+  3. Type:  venv\Scripts\Activate.ps1
+  4. Type:  python app.py
+  5. Open Chrome > http://localhost:5000
+  6. Use the app.
+  7. Ctrl+C in PowerShell to stop when done.
+
+
+================================================================
+  PART D: TROUBLESHOOTING
+================================================================
+
+----------------------------------------------------------------
+  1. "running scripts is disabled on this system"
+     (red error when running venv\Scripts\Activate.ps1)
+----------------------------------------------------------------
+
+Windows blocks PowerShell scripts by default for safety. To allow
+the app's own script to run:
+
+  1. In the same PowerShell window, type this and press Enter:
+
+        Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+  2. When it asks "Do you want to change the execution policy?",
+     type Y and press Enter.
+  3. Now try again:
+
+        venv\Scripts\Activate.ps1
+
+  This is a one-time fix.
+
+
+----------------------------------------------------------------
+  2. "py is not recognized" or
+     "python is not recognized"
+----------------------------------------------------------------
+
+Python was installed without "Add to PATH". Fix:
+
+  1. Press Windows key, type "Add or remove programs", Enter.
+  2. Find "Python 3.12.x" in the list, click it, click
+     "Uninstall", follow the prompts.
+  3. Redo PART A STEP 2, making SURE to check the
+     "Add python.exe to PATH" box at the bottom of the installer.
+
+
+----------------------------------------------------------------
+  3. pip install fails with a network error
+----------------------------------------------------------------
+
+Your internet connection may have dropped. Check connectivity and
+re-run:
+
+        pip install -r requirements.txt
+
+
+----------------------------------------------------------------
+  4. QR code doesn't appear / Chrome opens to a weird page
+----------------------------------------------------------------
+
+  1. Close the Chrome window the tool opened.
+  2. Stop the app (Ctrl+C in PowerShell).
+  3. In File Explorer, go to your user folder (Windows key + E,
+     then click your username in the left sidebar).
+  4. Find the folder called "whatsapp_chrome_profile" and delete it.
+  5. Start the app again (python app.py) and click Send. The QR
+     code should appear fresh.
+
+
+----------------------------------------------------------------
+  5. Messages are failing even for valid numbers
+----------------------------------------------------------------
+
+  a. Check that your phone is connected to the internet.
+  b. Check that WhatsApp Web is still linked:
+        Phone > WhatsApp > Settings > Linked Devices
+     If your device is NOT listed, follow step 4 above to reset.
+  c. WhatsApp may be rate-limiting you. The tool now pauses
+     automatically after 3 consecutive failures. If you see it
+     pause, that's protecting your account - let it wait.
+
+
+----------------------------------------------------------------
+  6. "A command is already running for this campaign"
+----------------------------------------------------------------
+
+You tried to run two sends for the same campaign at once. Wait
+for the first one to finish (or click Stop), then try again.
+
+
+----------------------------------------------------------------
+  7. Excel saved tracking.csv and now phone numbers show as
+     "9.19877E+11" or similar
+----------------------------------------------------------------
+
+Excel "helpfully" converted long numbers to scientific notation.
+When opening tracking.csv or contacts.csv next time:
+
+  1. Do NOT double-click it.
+  2. Open Excel first (blank workbook).
+  3. Use Data tab > "From Text/CSV", pick the file.
+  4. In the preview, click the phone_number column header and
+     change its type from "Whole Number" to "Text".
+  5. Click "Load".
+
+Or just edit the file in Notepad - it is plain text.
+
+
+----------------------------------------------------------------
+  8. Browser says "This site can't be reached" at localhost:5000
+----------------------------------------------------------------
+
+The app is not running. Go to the PowerShell window:
+
+  - If you see "Running on http://127.0.0.1:5000", try again.
+  - If you see nothing or a plain prompt, go through PART B
+    STEPS 2-3 again (activate the workspace, then python app.py).
+
+
+----------------------------------------------------------------
+  9. The app works but I want to stop everything right now
+----------------------------------------------------------------
+
+  1. In the browser, click the red "Stop" button (if a command
+     is running).
+  2. In PowerShell, press Ctrl+C.
+  3. Close the Chrome window the tool opened.
+
+
+================================================================
+  SAFETY NOTES
+================================================================
+
+- This tool uses YOUR personal WhatsApp account. Messages look
+  like they are coming from you because they ARE.
+- WhatsApp does not officially allow bulk messaging and can ban
+  accounts that send too many. Keep your contact lists
+  reasonable (ideally under 200 per day) and only message people
+  you genuinely know or who would welcome your message.
+- The tool is configured to wait 3 seconds between messages and
+  will pause automatically if it sees repeated failures - this
+  protects your account.
+- Your tracking.csv contains personal contact data. Do not share
+  the campaigns folder with anyone.
+
+
+================================================================
+  NEED HELP?
+================================================================
+
+If something in this guide didn't work and Part D doesn't help,
+take a screenshot of the red error text in PowerShell and send
+it to the person who gave you this tool. They can help you
+figure out what went wrong.
+
+Good luck!
