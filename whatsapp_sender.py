@@ -26,7 +26,11 @@ Subsequent runs: Session persists via Chrome profile.
 """
 
 import argparse
+import contextlib
+import functools
+import os
 import pandas as pd
+import re
 import shutil
 import time
 import urllib.parse
@@ -56,12 +60,210 @@ def signal_handler(sig, frame):
     print("\n\n⚠️  Shutdown requested. Finishing current message and cleaning up...")
 
 
+def request_shutdown(reason: str = "API cancel"):
+    """Cooperative shutdown from outside the signal-handler path.
+
+    Used by the Flask UI's /api/cancel/<job_id> endpoint so users can stop a
+    running campaign without killing the Python process. The running send
+    loop polls ``shutdown_requested`` at every safe point and exits cleanly.
+    """
+    global shutdown_requested
+    shutdown_requested = True
+    print(f"\n⚠️  Shutdown requested ({reason}). Finishing current message and cleaning up...")
+
+
+def reset_shutdown():
+    """Clear the shutdown flag. Call at the start of each command run so a
+    previous cancel doesn't leak into the next one."""
+    global shutdown_requested
+    shutdown_requested = False
+
+
 # === CONFIGURATION ===
 CAMPAIGNS_DIR = Path("campaigns")
 WAIT_BETWEEN_MESSAGES = 3      # seconds between each message
 PAGE_LOAD_TIMEOUT = 60         # seconds to wait for initial WhatsApp load
 MESSAGE_LOAD_TIMEOUT = 10      # seconds to wait for each message to load
 CHROME_PROFILE_DIR = str(Path.home() / "whatsapp_chrome_profile")
+
+
+# === CAMPAIGN LOCK ===
+
+class CampaignBusyError(RuntimeError):
+    """Raised when another process is already running a command for this campaign."""
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if a process with this PID is currently running.
+
+    Cross-platform: uses os.kill(pid, 0) which raises OSError for dead PIDs
+    on Unix and Windows alike.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by someone else — still counts as alive.
+        return True
+    except OSError:
+        # Windows: ERROR_ACCESS_DENIED means the PID exists.
+        return True
+    return True
+
+
+@contextlib.contextmanager
+def campaign_lock(campaign_dir: Path):
+    """Exclusive per-campaign lock.
+
+    Prevents two concurrent runs (CLI or Flask UI) from clobbering tracking.csv.
+    Writes the current PID into ``<campaign_dir>/.lock``. Stale locks (PID no
+    longer alive) are reclaimed automatically.
+
+    Raises CampaignBusyError if another live process holds the lock.
+    """
+    lock_path = campaign_dir / ".lock"
+
+    # Reclaim stale locks
+    if lock_path.exists():
+        try:
+            existing_pid = int(lock_path.read_text().strip() or "0")
+        except (ValueError, OSError):
+            existing_pid = 0
+        if existing_pid and _pid_alive(existing_pid) and existing_pid != os.getpid():
+            raise CampaignBusyError(
+                f"Campaign '{campaign_dir.name}' is already running (PID {existing_pid}). "
+                f"If you're sure nothing is running, delete {lock_path}"
+            )
+        # Stale or our own: remove and continue
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    # Atomic create — fails if another process created it between our check and now
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise CampaignBusyError(
+            f"Campaign '{campaign_dir.name}' just became busy. Try again."
+        )
+    try:
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+    finally:
+        os.close(fd)
+
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _install_signal_handler():
+    """Register SIGINT handler for graceful Ctrl+C.
+
+    Silently no-ops when called from a non-main thread (e.g. the Flask UI),
+    where ``signal.signal`` raises ValueError.
+    """
+    try:
+        signal.signal(signal.SIGINT, signal_handler)
+    except ValueError:
+        pass  # Not the main thread — signal handler already installed or unavailable.
+
+
+class _TeeStream:
+    """Duplicate writes to several streams.
+
+    Used to mirror the command's stdout into a per-campaign log file while
+    still letting the Flask UI's stdout capture (app.py ``_QueueWriter``) and
+    the terminal see the output. Failures on any one stream are swallowed so
+    a log-file error never takes down the send loop.
+    """
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, s: str) -> int:
+        for s_ in self._streams:
+            try:
+                s_.write(s)
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self) -> None:
+        for s_ in self._streams:
+            try:
+                s_.flush()
+            except Exception:
+                pass
+
+
+@contextlib.contextmanager
+def _campaign_log_file(campaign_dir: Path, command_name: str):
+    """Open a per-campaign log file and tee stdout into it for the duration.
+
+    Log files live in ``<campaign_dir>/logs/<timestamp>-<command>.log`` and
+    preserve a full record of each run so problems can be diagnosed after the
+    fact. Silent-no-ops if the directory can't be created.
+    """
+    log_path = None
+    handle = None
+    try:
+        logs_dir = campaign_dir / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_path = logs_dir / f"{timestamp}-{command_name}.log"
+        handle = open(log_path, "w", encoding="utf-8", buffering=1)  # line-buffered
+        handle.write(f"# {command_name} for '{campaign_dir.name}' at {datetime.now().isoformat()}\n")
+    except OSError as e:
+        # Logging is best-effort; don't block the command if we can't open the file.
+        print(f"   ⚠ Could not open log file: {e}")
+        handle = None
+
+    original_stdout = sys.stdout
+    if handle is not None:
+        sys.stdout = _TeeStream(original_stdout, handle)
+    try:
+        yield log_path
+    finally:
+        sys.stdout = original_stdout
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+
+
+def _campaign_run(func):
+    """Decorator for cmd_* functions that open a browser session.
+
+    - Installs the SIGINT handler once (safely no-ops off the main thread).
+    - Acquires an exclusive per-campaign lock file so two concurrent runs
+      (CLI + UI, or two CLIs) can't clobber tracking.csv.
+    - Opens a per-campaign log file for the duration of the command and
+      tees stdout into it so every run leaves a persistent trail in
+      ``campaigns/<name>/logs/``.
+
+    The wrapped function must accept ``campaign_name`` as its first argument.
+    """
+    @functools.wraps(func)
+    def wrapper(campaign_name: str, *args, **kwargs):
+        _install_signal_handler()
+        reset_shutdown()  # clear any lingering flag from a previous cancelled run
+        campaign_dir = get_campaign_dir(campaign_name)
+        try:
+            with campaign_lock(campaign_dir):
+                with _campaign_log_file(campaign_dir, func.__name__.removeprefix("cmd_")):
+                    return func(campaign_name, *args, **kwargs)
+        except CampaignBusyError as e:
+            print(f"❌ {e}")
+            return None
+    return wrapper
 
 TRACKING_COLUMNS = [
     "first_name", "last_name", "phone_number", "status", "sent_at",
@@ -199,7 +401,9 @@ def save_tracking(campaign_dir: Path, tracking: pd.DataFrame):
     # Normalize phone numbers before saving to prevent .0 float suffix
     tracking = tracking.copy()
     tracking["phone_number"] = normalize_phone(tracking["phone_number"])
-    tracking.to_csv(tracking_path, index=False)
+    # encoding="utf-8" is explicit so non-ASCII names/notes round-trip correctly
+    # on Windows (where the default is cp1252) and any other non-UTF-8 locale.
+    tracking.to_csv(tracking_path, index=False, encoding="utf-8")
 
 
 def update_tracking_row(tracking: pd.DataFrame, phone_number: str, **kwargs):
@@ -213,8 +417,56 @@ def update_tracking_row(tracking: pd.DataFrame, phone_number: str, **kwargs):
 
 # === SELENIUM / WHATSAPP WEB ===
 
+# Files Chrome creates in the profile directory to prevent concurrent launches.
+# When Chrome crashes, these linger and block the next start-up with a cryptic
+# "profile already in use" error. We sweep them if no Chrome process holds them.
+_CHROME_STALE_LOCKS = ("SingletonLock", "SingletonSocket", "SingletonCookie")
+
+
+def _sweep_stale_chrome_locks(profile_dir: str) -> None:
+    """Remove Chrome singleton lock files if they're stale.
+
+    On POSIX these are symlinks of the form ``pid-hostname``; if the pid is
+    dead we can safely unlink. On Windows they're regular files and always
+    removable when Chrome isn't running. This is a best-effort sweep — we
+    don't block the launch if removal fails for any reason.
+    """
+    profile_path = Path(profile_dir)
+    if not profile_path.exists():
+        return
+
+    for name in _CHROME_STALE_LOCKS:
+        lock_file = profile_path / name
+        if not lock_file.exists() and not lock_file.is_symlink():
+            continue
+
+        should_remove = True
+        # POSIX: SingletonLock is a symlink "pid-hostname" — check if pid is alive
+        if lock_file.is_symlink():
+            try:
+                target = os.readlink(lock_file)
+                pid_str = target.split("-", 1)[0]
+                pid = int(pid_str)
+                if _pid_alive(pid):
+                    should_remove = False
+            except (OSError, ValueError):
+                # Unreadable target or unparseable pid — treat as stale
+                pass
+
+        if should_remove:
+            try:
+                lock_file.unlink()
+                print(f"   Removed stale Chrome lock: {lock_file.name}")
+            except OSError as e:
+                # Don't block launch if we can't remove — Chrome itself may give a clearer error
+                print(f"   ⚠ Could not remove {lock_file.name}: {e}")
+
+
 def create_driver() -> webdriver.Chrome:
     """Create Chrome WebDriver with persistent profile for WhatsApp session."""
+    # Sweep stale lock files from a prior crashed Chrome before launch.
+    _sweep_stale_chrome_locks(CHROME_PROFILE_DIR)
+
     options = Options()
 
     # Use a persistent profile to remember WhatsApp login
@@ -222,8 +474,12 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--profile-directory=Default")
 
     # Recommended options for stability
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
+    # --no-sandbox and --disable-dev-shm-usage target Linux-specific issues
+    # (sandbox perms on headless Linux, /dev/shm size limits in containers).
+    # They're harmless on macOS/Windows but noisy — gate them.
+    if sys.platform.startswith("linux"):
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--remote-debugging-port=9222")
@@ -266,16 +522,112 @@ def wait_for_whatsapp_load(driver: webdriver.Chrome, timeout: int = PAGE_LOAD_TI
         print("   If you see WhatsApp Web in the browser, you can proceed.")
 
 
+class BackoffTracker:
+    """Track consecutive send failures and apply escalating backoff.
+
+    WhatsApp Web silently throttles accounts that bulk-send; symptoms are a
+    run of timeouts where the send button never becomes clickable. Pressing
+    through the throttle is the fastest way to get a temporary account ban,
+    so we pause on repeated failures and give up entirely after too many.
+
+    Thresholds chosen conservatively:
+      3 fails in a row  → 60s pause
+      6 fails in a row  → 120s pause
+      10 fails in a row → abort the whole command
+    """
+    FIRST_PAUSE = 3
+    SECOND_PAUSE = 6
+    ABORT_THRESHOLD = 10
+    SHORT_BACKOFF_S = 60
+    LONG_BACKOFF_S = 120
+
+    def __init__(self):
+        self.consecutive_failures = 0
+
+    def record_success(self) -> None:
+        self.consecutive_failures = 0
+
+    def record_failure(self) -> tuple[int, bool]:
+        """Increment failure counter. Returns (backoff_seconds, should_abort)."""
+        self.consecutive_failures += 1
+        n = self.consecutive_failures
+        if n >= self.ABORT_THRESHOLD:
+            return (0, True)
+        if n >= self.SECOND_PAUSE:
+            return (self.LONG_BACKOFF_S, False)
+        if n >= self.FIRST_PAUSE:
+            return (self.SHORT_BACKOFF_S, False)
+        return (0, False)
+
+
+def _apply_backoff_if_needed(send_ok: bool, tracker: BackoffTracker) -> bool:
+    """Update backoff tracker, print status, sleep if needed.
+
+    Returns True to continue sending, False to abort the run (caller should
+    break out of its send loop). Respects ``shutdown_requested`` during sleep
+    so the user's cancel still works during a backoff window.
+    """
+    if send_ok:
+        tracker.record_success()
+        return True
+
+    backoff, abort = tracker.record_failure()
+    if abort:
+        print(f"\n🚨 {tracker.consecutive_failures} consecutive failures — aborting run to "
+              "protect the WhatsApp account. Check connectivity, the number list, "
+              "and try again later.")
+        return False
+    if backoff > 0:
+        print(f"   ⚠ {tracker.consecutive_failures} failures in a row — backing off {backoff}s "
+              "before next send...")
+        for _ in range(backoff):
+            if shutdown_requested:
+                break
+            time.sleep(1)
+    return True
+
+
+# Seconds to wait for the delivery-tick (check mark) to appear after clicking Send.
+# If this elapses with no tick, the message is still probably in WhatsApp's outbox
+# but we can't confirm delivery — treat as best-effort success.
+DELIVERY_CONFIRM_TIMEOUT = 5
+
+# Selectors for the delivery-status icon that appears once WhatsApp has accepted
+# the message for sending. These change periodically — keep multiple fallbacks.
+_DELIVERY_TICK_SELECTORS = (
+    "span[data-icon='msg-check']",        # single grey tick: sent from our end
+    "span[data-icon='msg-dblcheck']",     # double grey tick: delivered
+    "span[data-icon='msg-dblcheck-ack']", # double blue tick: read
+    "span[data-icon='msg-time']",         # clock icon: still sending (counts as queued)
+)
+
+
+def _wait_for_delivery_tick(driver: webdriver.Chrome, timeout: int = DELIVERY_CONFIRM_TIMEOUT) -> bool:
+    """Poll briefly for WhatsApp's post-send tick/clock icon.
+
+    Returns True as soon as any delivery indicator is visible, False if the
+    timeout elapses without one. This replaces a blind ``sleep(2)`` and catches
+    cases where the send button was clicked but the message never left the
+    outbox (network blip, account restriction, etc.).
+    """
+    try:
+        wait = WebDriverWait(driver, timeout, poll_frequency=0.3)
+        selector = ", ".join(_DELIVERY_TICK_SELECTORS)
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+        return True
+    except TimeoutException:
+        return False
+
+
 def send_message(driver: webdriver.Chrome, phone_number: str, message: str) -> bool:
     """
     Send a message to a specific phone number via WhatsApp Web.
-    Returns True if successful, False otherwise.
+    Returns True if the delivery tick was observed, False otherwise.
     """
     # URL-encode the message to handle special characters and newlines
     encoded_message = urllib.parse.quote(message)
 
     # Remove non-digit characters for the URL (WhatsApp expects digits only)
-    import re
     clean_number = re.sub(r"[^\d]", "", str(phone_number))
 
     # Navigate to WhatsApp Web with pre-filled message
@@ -306,13 +658,17 @@ def send_message(driver: webdriver.Chrome, phone_number: str, message: str) -> b
         if not send_button:
             raise TimeoutException("Could not find send button with any known selector")
 
-        # Click send immediately
+        # Click send
         send_button.click()
 
-        # Wait for message to be sent (check for double-tick or message disappearing from input)
-        time.sleep(2)
-
-        return True
+        # Verify delivery by waiting for the tick/clock icon. Falling back to a
+        # short sleep on timeout keeps behaviour close to the old blind-sleep
+        # path — the message likely still went out, we just can't confirm.
+        if _wait_for_delivery_tick(driver):
+            return True
+        print("  ⚠ Send clicked but no delivery tick observed within "
+              f"{DELIVERY_CONFIRM_TIMEOUT}s — treating as failed.")
+        return False
 
     except TimeoutException:
         print(f"  ⚠ Could not load chat. Number may be invalid or not on WhatsApp.")
@@ -349,7 +705,7 @@ def cmd_create(campaign_name: str, contacts_path: str = None, message_path: str 
         df = load_contacts(contacts_path)
         print(f"   Copied contacts from {contacts_path} ({len(df)} contacts)")
     else:
-        with open(campaign_dir / "contacts.csv", "w") as f:
+        with open(campaign_dir / "contacts.csv", "w", encoding="utf-8") as f:
             f.write("first_name,last_name,phone_number\n")
         print(f"   Created empty contacts.csv (add your contacts)")
 
@@ -358,32 +714,32 @@ def cmd_create(campaign_name: str, contacts_path: str = None, message_path: str 
         shutil.copy(message_path, campaign_dir / "message.md")
         print(f"   Copied message template from {message_path}")
     else:
-        with open(campaign_dir / "message.md", "w") as f:
+        with open(campaign_dir / "message.md", "w", encoding="utf-8") as f:
             f.write("Hi {first_name}\n\nYour message here.\n")
         print(f"   Created template message.md (edit with your message)")
 
     # Create follow-up and reminder templates
-    with open(campaign_dir / "followup.md", "w") as f:
+    with open(campaign_dir / "followup.md", "w", encoding="utf-8") as f:
         f.write("Hi {first_name}\n\nThanks for your response! Your follow-up message here.\n")
     print(f"   Created template followup.md")
 
-    with open(campaign_dir / "reminder.md", "w") as f:
+    with open(campaign_dir / "reminder.md", "w", encoding="utf-8") as f:
         f.write("Hi {first_name}\n\nJust following up on my earlier message. Your reminder here.\n")
     print(f"   Created template reminder.md")
 
-    with open(campaign_dir / "followup2.md", "w") as f:
+    with open(campaign_dir / "followup2.md", "w", encoding="utf-8") as f:
         f.write("Hi {first_name}\n\nYour second follow-up message here.\n")
     print(f"   Created template followup2.md")
 
-    with open(campaign_dir / "followup3.md", "w") as f:
+    with open(campaign_dir / "followup3.md", "w", encoding="utf-8") as f:
         f.write("Hi {first_name}\n\nYour third follow-up message here.\n")
     print(f"   Created template followup3.md")
 
-    with open(campaign_dir / "referral.md", "w") as f:
+    with open(campaign_dir / "referral.md", "w", encoding="utf-8") as f:
         f.write("Hi {first_name}\n\nWould you mind sharing this with your network? Your referral message here.\n")
     print(f"   Created template referral.md")
 
-    with open(campaign_dir / "ask_to_refer.md", "w") as f:
+    with open(campaign_dir / "ask_to_refer.md", "w", encoding="utf-8") as f:
         f.write("Hi {first_name}\n\nWould you be open to sharing this with anyone who might benefit? Your ask-to-refer message here.\n")
     print(f"   Created template ask_to_refer.md")
 
@@ -397,10 +753,10 @@ def cmd_create(campaign_name: str, contacts_path: str = None, message_path: str 
     print(f"  6. Run: python whatsapp_sender.py send {campaign_name}")
 
 
+@_campaign_run
 def cmd_send(campaign_name: str):
     """Send initial messages for a campaign."""
     global shutdown_requested
-    signal.signal(signal.SIGINT, signal_handler)
 
     campaign_dir = get_campaign_dir(campaign_name)
     contacts = load_campaign_contacts(campaign_dir)
@@ -456,6 +812,7 @@ def cmd_send(campaign_name: str):
         successful = 0
         failed = 0
         sent_this_run = 0
+        tracker = BackoffTracker()
 
         for idx, row in tracking.iterrows():
             if row["status"] != "pending":
@@ -478,7 +835,8 @@ def cmd_send(campaign_name: str):
             message = personalize_message(template, first_name)
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if send_message(driver, phone, message):
+            ok = send_message(driver, phone, message)
+            if ok:
                 print(f"   ✓ Sent successfully")
                 update_tracking_row(tracking, phone, status="sent", sent_at=now)
                 successful += 1
@@ -489,6 +847,8 @@ def cmd_send(campaign_name: str):
             # Save after each message (crash-safe)
             save_tracking(campaign_dir, tracking)
 
+            if not _apply_backoff_if_needed(ok, tracker):
+                break
             if shutdown_requested:
                 print("\n🛑 Stopping as requested...")
                 break
@@ -516,176 +876,39 @@ def cmd_send(campaign_name: str):
         print(f"\n   {pending_count - sent_this_run} contacts remaining. Run 'send' again to resume.")
 
 
+@_campaign_run
 def cmd_followup(campaign_name: str):
     """Send follow-up messages to contacts who responded."""
-    global shutdown_requested
-    signal.signal(signal.SIGINT, signal_handler)
-
-    campaign_dir = get_campaign_dir(campaign_name)
-    tracking = load_tracking(campaign_dir)
-
-    if tracking.empty:
-        print(f"No tracking data for '{campaign_name}'. Run 'send' first.")
-        return
-
-    template = load_campaign_template(campaign_dir, "followup.md")
-
-    # Filter: responded=yes AND interested!=no AND followup_sent!=yes AND locked!=yes
-    to_followup = tracking[
-        (tracking["responded"].astype(str).str.lower() == "yes") &
-        (tracking["interested"].astype(str).str.lower() != "no") &
-        (tracking["followup_sent"].astype(str).str.lower() != "yes") &
-        (tracking["locked"].astype(str).str.lower() != "yes")
-    ]
-
-    if len(to_followup) == 0:
-        print("No contacts to follow up with.")
-        print("(Contacts need interested=yes and followup_sent!=yes in tracking.csv)")
-        return
-
-    print("=" * 50)
-    print(f"Follow-up: {campaign_name}")
-    print("=" * 50)
-    print(f"Sending follow-up to {len(to_followup)} responders...")
-    print("(Press Ctrl+C at any time to stop gracefully)")
-
-    driver = create_driver()
-
-    try:
-        open_whatsapp(driver)
-        print("\n📤 Sending follow-ups...\n")
-
-        count = 0
-        for idx, row in to_followup.iterrows():
-            if shutdown_requested:
-                print("\n🛑 Stopping as requested...")
-                break
-
-            first_name = row["first_name"]
-            last_name = row.get("last_name", "")
-            phone = row["phone_number"]
-            count += 1
-
-            display_name = f"{first_name} {last_name}".strip()
-            print(f"[{count}/{len(to_followup)}] Follow-up to {display_name} ({phone})...")
-
-            message = personalize_message(template, first_name)
-
-            if send_message(driver, phone, message):
-                print(f"   ✓ Sent successfully")
-                update_tracking_row(tracking, phone, followup_sent="yes")
-            else:
-                print(f"   ✗ Failed")
-
-            save_tracking(campaign_dir, tracking)
-
-            if shutdown_requested:
-                break
-
-            if count < len(to_followup):
-                for _ in range(WAIT_BETWEEN_MESSAGES):
-                    if shutdown_requested:
-                        break
-                    time.sleep(1)
-
-    finally:
-        print("\n⏳ Waiting 5s for last message to deliver...")
-        time.sleep(5)
-        print("🔒 Closing browser...")
-        driver.quit()
-        save_tracking(campaign_dir, tracking)
-
-    print()
-    cmd_status(campaign_name)
+    def filter_fn(tracking):
+        return tracking[
+            (tracking["responded"].astype(str).str.lower() == "yes") &
+            (tracking["interested"].astype(str).str.lower() != "no") &
+            (tracking["followup_sent"].astype(str).str.lower() != "yes") &
+            (tracking["locked"].astype(str).str.lower() != "yes")
+        ]
+    _send_targeted(campaign_name, "followup.md", filter_fn, "followup_sent", "Follow-up")
 
 
+@_campaign_run
 def cmd_remind(campaign_name: str):
     """Send reminder messages to contacts who did not respond."""
-    global shutdown_requested
-    signal.signal(signal.SIGINT, signal_handler)
-
-    campaign_dir = get_campaign_dir(campaign_name)
-    tracking = load_tracking(campaign_dir)
-
-    if tracking.empty:
-        print(f"No tracking data for '{campaign_name}'. Run 'send' first.")
-        return
-
-    template = load_campaign_template(campaign_dir, "reminder.md")
-
-    # Filter: status=sent AND responded=no AND reminder_sent!=yes AND locked!=yes
-    to_remind = tracking[
-        (tracking["status"] == "sent") &
-        (tracking["responded"].astype(str).str.lower() == "no") &
-        (tracking["reminder_sent"].astype(str).str.lower() != "yes") &
-        (tracking["locked"].astype(str).str.lower() != "yes")
-    ]
-
-    if len(to_remind) == 0:
-        print("No contacts to remind.")
-        print("(Contacts need status=sent, responded=no, and reminder_sent!=yes in tracking.csv)")
-        return
-
-    print("=" * 50)
-    print(f"Reminder: {campaign_name}")
-    print("=" * 50)
-    print(f"Sending reminder to {len(to_remind)} non-responders...")
-    print("(Press Ctrl+C at any time to stop gracefully)")
-
-    driver = create_driver()
-
-    try:
-        open_whatsapp(driver)
-        print("\n📤 Sending reminders...\n")
-
-        count = 0
-        for idx, row in to_remind.iterrows():
-            if shutdown_requested:
-                print("\n🛑 Stopping as requested...")
-                break
-
-            first_name = row["first_name"]
-            last_name = row.get("last_name", "")
-            phone = row["phone_number"]
-            count += 1
-
-            display_name = f"{first_name} {last_name}".strip()
-            print(f"[{count}/{len(to_remind)}] Reminder to {display_name} ({phone})...")
-
-            message = personalize_message(template, first_name)
-
-            if send_message(driver, phone, message):
-                print(f"   ✓ Sent successfully")
-                update_tracking_row(tracking, phone, reminder_sent="yes")
-            else:
-                print(f"   ✗ Failed")
-
-            save_tracking(campaign_dir, tracking)
-
-            if shutdown_requested:
-                break
-
-            if count < len(to_remind):
-                for _ in range(WAIT_BETWEEN_MESSAGES):
-                    if shutdown_requested:
-                        break
-                    time.sleep(1)
-
-    finally:
-        print("\n⏳ Waiting 5s for last message to deliver...")
-        time.sleep(5)
-        print("🔒 Closing browser...")
-        driver.quit()
-        save_tracking(campaign_dir, tracking)
-
-    print()
-    cmd_status(campaign_name)
+    def filter_fn(tracking):
+        return tracking[
+            (tracking["status"] == "sent") &
+            (tracking["responded"].astype(str).str.lower() == "no") &
+            (tracking["reminder_sent"].astype(str).str.lower() != "yes") &
+            (tracking["locked"].astype(str).str.lower() != "yes")
+        ]
+    _send_targeted(campaign_name, "reminder.md", filter_fn, "reminder_sent", "Reminder")
 
 
 def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_col: str, label: str):
-    """Generic helper: filter contacts, send a template, update a tracking column."""
+    """Generic helper: filter contacts, send a template, update a tracking column.
+
+    Does NOT acquire the campaign lock — callers must be decorated with
+    @_campaign_run so the lock is held at the outer command boundary.
+    """
     global shutdown_requested
-    signal.signal(signal.SIGINT, signal_handler)
 
     campaign_dir = get_campaign_dir(campaign_name)
     tracking = load_tracking(campaign_dir)
@@ -714,6 +937,7 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
         print(f"\n📤 Sending {label}...\n")
 
         count = 0
+        tracker = BackoffTracker()
         for idx, row in to_send.iterrows():
             if shutdown_requested:
                 print("\n🛑 Stopping as requested...")
@@ -729,7 +953,8 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
 
             message = personalize_message(template, first_name)
 
-            if send_message(driver, phone, message):
+            ok = send_message(driver, phone, message)
+            if ok:
                 print(f"   ✓ Sent successfully")
                 update_tracking_row(tracking, phone, **{tracking_col: "yes"})
             else:
@@ -737,6 +962,8 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
 
             save_tracking(campaign_dir, tracking)
 
+            if not _apply_backoff_if_needed(ok, tracker):
+                break
             if shutdown_requested:
                 break
 
@@ -757,6 +984,7 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
     cmd_status(campaign_name)
 
 
+@_campaign_run
 def cmd_followup2(campaign_name: str):
     """Send second follow-up to interested contacts who received first follow-up."""
     def filter_fn(tracking):
@@ -770,6 +998,7 @@ def cmd_followup2(campaign_name: str):
     _send_targeted(campaign_name, "followup2.md", filter_fn, "followup2_sent", "Follow-up 2")
 
 
+@_campaign_run
 def cmd_followup3(campaign_name: str):
     """Send third follow-up to interested contacts who received second follow-up."""
     def filter_fn(tracking):
@@ -783,6 +1012,7 @@ def cmd_followup3(campaign_name: str):
     _send_targeted(campaign_name, "followup3.md", filter_fn, "followup3_sent", "Follow-up 3")
 
 
+@_campaign_run
 def cmd_ask_to_refer(campaign_name: str):
     """Ask all responders if they'd be willing to refer others."""
     def filter_fn(tracking):
@@ -794,86 +1024,16 @@ def cmd_ask_to_refer(campaign_name: str):
     _send_targeted(campaign_name, "ask_to_refer.md", filter_fn, "ask_to_refer_sent", "Ask to refer")
 
 
+@_campaign_run
 def cmd_referral(campaign_name: str):
     """Send referral messages to contacts willing to refer others."""
-    global shutdown_requested
-    signal.signal(signal.SIGINT, signal_handler)
-
-    campaign_dir = get_campaign_dir(campaign_name)
-    tracking = load_tracking(campaign_dir)
-
-    if tracking.empty:
-        print(f"No tracking data for '{campaign_name}'. Run 'send' first.")
-        return
-
-    template = load_campaign_template(campaign_dir, "referral.md")
-
-    # Filter: referrer=yes AND referral_sent!=yes AND locked!=yes
-    to_refer = tracking[
-        (tracking["referrer"].astype(str).str.lower() == "yes") &
-        (tracking["referral_sent"].astype(str).str.lower() != "yes") &
-        (tracking["locked"].astype(str).str.lower() != "yes")
-    ]
-
-    if len(to_refer) == 0:
-        print("No contacts to send referral messages to.")
-        print("(Contacts need referrer=yes and referral_sent!=yes in tracking.csv)")
-        return
-
-    print("=" * 50)
-    print(f"Referral: {campaign_name}")
-    print("=" * 50)
-    print(f"Sending referral message to {len(to_refer)} referrers...")
-    print("(Press Ctrl+C at any time to stop gracefully)")
-
-    driver = create_driver()
-
-    try:
-        open_whatsapp(driver)
-        print("\n📤 Sending referral messages...\n")
-
-        count = 0
-        for idx, row in to_refer.iterrows():
-            if shutdown_requested:
-                print("\n🛑 Stopping as requested...")
-                break
-
-            first_name = row["first_name"]
-            last_name = row.get("last_name", "")
-            phone = row["phone_number"]
-            count += 1
-
-            display_name = f"{first_name} {last_name}".strip()
-            print(f"[{count}/{len(to_refer)}] Referral to {display_name} ({phone})...")
-
-            message = personalize_message(template, first_name)
-
-            if send_message(driver, phone, message):
-                print(f"   ✓ Sent successfully")
-                update_tracking_row(tracking, phone, referral_sent="yes")
-            else:
-                print(f"   ✗ Failed")
-
-            save_tracking(campaign_dir, tracking)
-
-            if shutdown_requested:
-                break
-
-            if count < len(to_refer):
-                for _ in range(WAIT_BETWEEN_MESSAGES):
-                    if shutdown_requested:
-                        break
-                    time.sleep(1)
-
-    finally:
-        print("\n⏳ Waiting 5s for last message to deliver...")
-        time.sleep(5)
-        print("🔒 Closing browser...")
-        driver.quit()
-        save_tracking(campaign_dir, tracking)
-
-    print()
-    cmd_status(campaign_name)
+    def filter_fn(tracking):
+        return tracking[
+            (tracking["referrer"].astype(str).str.lower() == "yes") &
+            (tracking["referral_sent"].astype(str).str.lower() != "yes") &
+            (tracking["locked"].astype(str).str.lower() != "yes")
+        ]
+    _send_targeted(campaign_name, "referral.md", filter_fn, "referral_sent", "Referral")
 
 
 def cmd_status(campaign_name: str):

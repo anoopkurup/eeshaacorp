@@ -59,8 +59,23 @@ campaigns/<campaign_name>/
 
 Install via:
 ```bash
+# macOS / Linux
 python -m venv venv
-source venv/bin/activate   # macOS/Linux
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+```powershell
+# Windows (PowerShell)
+py -m venv venv
+venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+```cmd
+:: Windows (cmd.exe)
+py -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -71,13 +86,18 @@ Required packages:
 
 **Important:** Always activate the virtual environment before running the script:
 ```bash
+# macOS / Linux
 source venv/bin/activate
+# Windows (PowerShell)
+venv\Scripts\Activate.ps1
+# Windows (cmd.exe)
+venv\Scripts\activate
 ```
 
 ## Running the Script
 
 ```bash
-# Activate virtual environment first
+# Activate virtual environment first (macOS/Linux shown; see above for Windows)
 source venv/bin/activate
 
 # Create a campaign

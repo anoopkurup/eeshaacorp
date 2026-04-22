@@ -29,3 +29,6 @@ maincontactlist.csv
 mainmessagestemp.md
 contacts.csv
 message_template.md
+
+# Claude Code state
+.claude/

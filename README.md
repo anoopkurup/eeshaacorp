@@ -11,17 +11,34 @@ Send personalized WhatsApp messages to multiple contacts using WhatsApp Web, wit
 ## Setup
 
 ```bash
-# Create and activate virtual environment
+# macOS / Linux
 python -m venv venv
-source venv/bin/activate   # macOS/Linux
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-# Install dependencies
+```powershell
+# Windows (PowerShell)
+py -m venv venv
+venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+```cmd
+:: Windows (cmd.exe)
+py -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
 **Important:** Always activate the virtual environment before running the script:
 ```bash
+# macOS / Linux
 source venv/bin/activate
+# Windows (PowerShell)
+venv\Scripts\Activate.ps1
+# Windows (cmd.exe)
+venv\Scripts\activate
 ```
 
 ## Quick Start
@@ -197,7 +214,7 @@ WhatsApp-Automation/
 
 | Issue | Solution |
 |-------|----------|
-| `ModuleNotFoundError: No module named 'pandas'` | Activate the virtual environment: `source venv/bin/activate` |
+| `ModuleNotFoundError: No module named 'pandas'` | Activate the virtual environment (`source venv/bin/activate` on macOS/Linux; `venv\Scripts\activate` on Windows) |
 | QR code doesn't appear | Delete `~/whatsapp_chrome_profile` and restart |
 | Messages not sending | Increase `PAGE_LOAD_TIMEOUT` |
 | "Number not on WhatsApp" | Verify the phone number includes country code |
