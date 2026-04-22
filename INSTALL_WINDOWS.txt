@@ -19,10 +19,12 @@ Total time for first-time setup: about 20-30 minutes.
   WHAT THIS APP DOES
 ================================================================
 
-This tool sends personalized WhatsApp messages to a list of contacts,
-keeps track of who responded, and helps you send follow-ups and
-reminders. It uses your own WhatsApp account - the same way you log
-into WhatsApp Web from a browser.
+This tool sends one personalized WhatsApp message to a list of contacts
+and then up to four reminders until each contact submits what was
+asked of them. You mark a contact as "submitted" in a spreadsheet,
+which stops all further reminders to that person. It uses your own
+WhatsApp account - the same way you log into WhatsApp Web from a
+browser.
 
 Important: Your phone must be connected to the internet while the
 tool is sending messages, because WhatsApp Web relays through it.
@@ -243,7 +245,8 @@ the way.
 
      and press Enter.
   3. The app's web page appears. You'll see a campaign selector
-     and a row of buttons (Send, Follow-up, Reminder, etc.).
+     and a row of buttons (Send Initial, Reminder 1, Reminder 2,
+     Reminder 3, Final Reminder).
 
 
 ----------------------------------------------------------------
@@ -268,12 +271,10 @@ Inside that folder, it has placed starter files you need to edit:
 
      contacts.csv         (your list of people)
      message.md           (your initial message)
-     followup.md          (follow-up 1)
-     followup2.md         (follow-up 2)
-     followup3.md         (follow-up 3)
-     reminder.md          (reminder to non-responders)
-     ask_to_refer.md      (ask responders to refer others)
-     referral.md          (forwardable message for referrers)
+     reminder1.md         (first reminder)
+     reminder2.md         (second reminder)
+     reminder3.md         (third reminder)
+     reminder_final.md    (final reminder)
 
 
 ----------------------------------------------------------------
@@ -323,9 +324,11 @@ Inside that folder, it has placed starter files you need to edit:
 
   3. Save the file (File > Save) and close Notepad.
 
-  4. You can edit followup.md, reminder.md, etc. the same way.
-     You don't have to write all of them upfront - you only need
-     the ones for the buttons you plan to press.
+  4. You can edit reminder1.md, reminder2.md, reminder3.md, and
+     reminder_final.md the same way. You don't have to write all of
+     them upfront - you only need the ones for the buttons you plan
+     to press. Each reminder should sound progressively more urgent
+     than the previous one.
 
 
 ----------------------------------------------------------------
@@ -372,34 +375,55 @@ The Chrome window closes automatically after a few seconds.
 
 
 ----------------------------------------------------------------
-  STEP 9: Track Responses and Send Follow-ups
+  STEP 9: Mark Submissions and Send Reminders
 ----------------------------------------------------------------
 
-After some people reply, open the tracking file:
+As people complete what you asked them to do (submit a form, pay an
+invoice, send a document - whatever your campaign is about), you
+mark them as "submitted" in the tracking file. That single mark is
+what stops all further reminders to that person.
+
+Open the tracking file:
 
      Documents\eeshaacorp-main\campaigns\<your-campaign>\tracking.csv
 
 Open it in Excel. You'll see columns for each contact:
 
-  status             - sent / failed / pending (auto-managed)
-  responded          - YOU fill in: yes / no
-  interested         - YOU fill in: yes / no / blank
-  followup_sent      - auto
-  reminder_sent      - auto
-  paid               - YOU fill in: yes / no
-  referrer           - YOU fill in: yes (if they'll refer others)
-  notes              - free text for your own notes
+  status                - sent / failed / pending (auto-managed)
+  sent_at               - timestamp of initial send (auto)
+  submitted             - YOU fill in: yes (once they submit)
+  reminder1_sent        - auto
+  reminder2_sent        - auto
+  reminder3_sent        - auto
+  reminder_final_sent   - auto
+  paid                  - YOU fill in: yes / no
+  locked                - YOU fill in: yes (excludes from every send)
+  notes                 - free text for your own notes
 
-To send follow-ups:
-  1. In Excel, mark "yes" in the "responded" column for anyone
-     who replied to your first message. Save.
-  2. Back in the browser, click the "Follow-up" button.
-  3. Only people marked responded=yes AND not responded
-     interested=no will get a follow-up.
+To send reminders:
 
-Similar logic for "Follow-up 2", "Follow-up 3", "Reminder",
-"Ask to refer", and "Referral" buttons. Each button tells you
-how many contacts are eligible right now.
+  1. In Excel, find anyone who has submitted since your last run
+     and put "yes" in their "submitted" column. Save and close.
+  2. Back in the browser, click "Reminder 1".
+     - Everyone who received the initial message and has NOT been
+       marked submitted=yes will get Reminder 1.
+  3. After some time passes and you've marked more submissions,
+     click "Reminder 2".
+     - Only people who already got Reminder 1 and still haven't
+       submitted will get Reminder 2.
+  4. Same idea for "Reminder 3" and "Final Reminder".
+
+Each button's badge shows how many contacts are eligible right
+now. A button is greyed out when zero contacts meet its criteria.
+
+Key rules:
+  - Reminders always go in order: 1, then 2, then 3, then Final.
+    You cannot skip ahead.
+  - The ONLY thing that stops reminders is submitted=yes. Whether
+    someone replied to WhatsApp or not is irrelevant.
+  - Setting locked=yes excludes that contact from every future
+    send, including initial send and all reminders. Useful when
+    someone opts out.
 
 
 ----------------------------------------------------------------
