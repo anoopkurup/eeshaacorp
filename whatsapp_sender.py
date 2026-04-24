@@ -102,6 +102,22 @@ class TrackingLockedError(RuntimeError):
     """
 
 
+class TemplateError(RuntimeError):
+    """Raised when a message template has an unsupported placeholder or
+    unescaped brace.
+
+    Surfaced before Chrome opens so the user fixes their template rather
+    than losing a run to a mid-loop KeyError or ValueError from
+    ``str.format``.
+    """
+
+
+class CampaignDataError(RuntimeError):
+    """Raised for user-visible data issues: missing CSV columns, bad
+    encoding, missing template file, etc. Caught by ``@_campaign_run`` so
+    the user gets an actionable message instead of a generic traceback."""
+
+
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with this PID is currently running.
 
@@ -278,6 +294,12 @@ def _campaign_run(func):
         except TrackingLockedError as e:
             print(str(e))
             return None
+        except TemplateError as e:
+            print(str(e))
+            return None
+        except CampaignDataError as e:
+            print(str(e))
+            return None
     return wrapper
 
 TRACKING_COLUMNS = [
@@ -300,13 +322,36 @@ def normalize_phone(series: pd.Series) -> pd.Series:
 
 def load_contacts(csv_path: str) -> pd.DataFrame:
     """Load contacts from CSV file."""
-    df = pd.read_csv(csv_path, encoding="utf-8-sig", dtype={"phone_number": str})
+    try:
+        df = pd.read_csv(csv_path, encoding="utf-8-sig", dtype={"phone_number": str})
+    except UnicodeDecodeError:
+        # Excel-on-Windows sometimes saves CSVs as cp1252. Retry explicitly
+        # so the user doesn't have to re-save in UTF-8.
+        try:
+            df = pd.read_csv(csv_path, encoding="cp1252", dtype={"phone_number": str})
+        except Exception as e:
+            raise CampaignDataError(
+                f"❌ Could not read {csv_path} — unsupported encoding.\n"
+                f"   Open the file in Excel and re-save as 'CSV UTF-8 (Comma delimited)'.\n"
+                f"   Original error: {e}"
+            )
+    except pd.errors.ParserError as e:
+        raise CampaignDataError(
+            f"❌ {csv_path} is not a valid CSV.\n"
+            f"   Common cause: embedded commas or line breaks in a field. "
+            f"Fix the file in Excel and save again.\n"
+            f"   Parser error: {e}"
+        )
 
     # Validate required columns
     required_cols = ["first_name", "last_name", "phone_number"]
     missing = [col for col in required_cols if col not in df.columns]
     if missing:
-        raise ValueError(f"CSV missing required columns: {missing}")
+        raise CampaignDataError(
+            f"❌ {csv_path} is missing required column(s): {', '.join(missing)}.\n"
+            f"   The file must have these headers (lowercase, exactly): "
+            f"first_name, last_name, phone_number."
+        )
 
     # Drop rows with missing first_name or phone_number
     df = df.dropna(subset=["first_name", "phone_number"])
@@ -327,18 +372,68 @@ def load_message_template(md_path: str) -> str:
         return f.read()
 
 
-def personalize_message(template: str, first_name: str) -> str:
+ALLOWED_TEMPLATE_KEYS = frozenset({"first_name", "last_name"})
+
+
+def _sanitize_template(template: str) -> str:
+    """Undo common Markdown-editor escapes (``\\_``, ``\\{``, ``\\}``)."""
+    return (
+        template.replace(r"\_", "_")
+                .replace(r"\{", "{")
+                .replace(r"\}", "}")
+    )
+
+
+def validate_template(template: str, template_name: str) -> None:
+    """Pre-flight check for message templates. Raises TemplateError.
+
+    Runs before Chrome opens so typos like ``{lastname}`` or stray braces
+    in the message body (``We'll see you {next week}``) are caught before
+    any message is sent. Allowed placeholders are defined in
+    ``ALLOWED_TEMPLATE_KEYS``.
+    """
+    from string import Formatter
+    template = _sanitize_template(template)
+    try:
+        fields = list(Formatter().parse(template))
+    except ValueError as e:
+        raise TemplateError(
+            f"❌ {template_name}: unescaped '{{' or '}}' in the template body.\n"
+            f"   To include a literal brace, double it ('{{{{' or '}}}}').\n"
+            f"   Parser error: {e}"
+        )
+    unknown = set()
+    for _literal, name, _fmt, _conv in fields:
+        if name is None:
+            continue
+        base = name.split(".", 1)[0].split("[", 1)[0]
+        if base and base not in ALLOWED_TEMPLATE_KEYS:
+            unknown.add(name)
+    if unknown:
+        raise TemplateError(
+            f"❌ {template_name}: unsupported placeholder(s): "
+            f"{', '.join('{' + k + '}' for k in sorted(unknown))}.\n"
+            f"   Supported: {', '.join('{' + k + '}' for k in sorted(ALLOWED_TEMPLATE_KEYS))}.\n"
+            f"   To include a literal brace, double it ('{{{{' or '}}}}')."
+        )
+
+
+def personalize_message(template: str, first_name: str, last_name: str = "") -> str:
     """Replace placeholders in template with actual values.
 
     Markdown editors (including many on Windows) frequently escape
     underscores and braces as ``\\_``, ``\\{``, ``\\}`` to prevent
     markdown formatting — which then causes ``str.format`` to look up
-    the literal key ``first\\_name`` and raise ``KeyError('first\\_name')``.
-    Strip those escape sequences so the template works regardless of how
-    the user saved it.
+    the literal key ``first\\_name`` and raise ``KeyError``. Strip those
+    escape sequences so the template works regardless of how the user
+    saved it.
+
+    ``last_name`` is optional to keep backwards compat with call sites
+    that haven't been updated; the allowed-key set in
+    ``validate_template`` mirrors the kwargs we pass here.
     """
-    template = template.replace(r"\_", "_").replace(r"\{", "{").replace(r"\}", "}")
-    return template.format(first_name=first_name)
+    template = _sanitize_template(template)
+    return template.format(first_name=first_name, last_name=last_name)
 
 
 # === CAMPAIGN DIRECTORY HELPERS ===
@@ -368,8 +463,10 @@ def load_campaign_contacts(campaign_dir: Path) -> pd.DataFrame:
     """Load contacts.csv from a campaign directory."""
     csv_path = campaign_dir / "contacts.csv"
     if not csv_path.exists():
-        print(f"No contacts.csv found in {campaign_dir}/")
-        sys.exit(1)
+        raise CampaignDataError(
+            f"❌ contacts.csv not found in {campaign_dir}/\n"
+            f"   Add your contact list to that file before running this command."
+        )
     return load_contacts(str(csv_path))
 
 
@@ -377,10 +474,18 @@ def load_campaign_template(campaign_dir: Path, template_name: str) -> str:
     """Load a message template from the campaign directory."""
     md_path = campaign_dir / template_name
     if not md_path.exists():
-        print(f"No {template_name} found in {campaign_dir}/")
-        print(f"Create it before running this command.")
-        sys.exit(1)
-    return load_message_template(str(md_path))
+        raise CampaignDataError(
+            f"❌ {template_name} not found in {campaign_dir}/\n"
+            f"   Create it (with your message text) before running this command."
+        )
+    try:
+        return load_message_template(str(md_path))
+    except UnicodeDecodeError as e:
+        raise CampaignDataError(
+            f"❌ Could not read {md_path} — unsupported encoding.\n"
+            f"   Re-save the file as UTF-8 (most editors have this in File > Save As).\n"
+            f"   Original error: {e}"
+        )
 
 
 # === TRACKING CSV MANAGEMENT ===
@@ -566,10 +671,37 @@ def create_driver() -> webdriver.Chrome:
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--remote-debugging-port=9222")
 
-    # Auto-download and manage ChromeDriver
-    service = Service(ChromeDriverManager().install())
+    # Auto-download and manage ChromeDriver. This touches the network the
+    # first time it runs; cache hits afterwards. Turn opaque network /
+    # install errors into something actionable.
+    try:
+        driver_path = ChromeDriverManager().install()
+    except Exception as e:
+        raise CampaignDataError(
+            f"❌ Could not download ChromeDriver.\n"
+            f"   Check your internet connection. If you're on a corporate network,\n"
+            f"   it may block downloads from googlechromelabs or chromedriver.storage.\n"
+            f"   Original error: {e}"
+        )
+    service = Service(driver_path)
 
-    return webdriver.Chrome(service=service, options=options)
+    try:
+        return webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        msg = str(e).lower()
+        if "cannot find chrome" in msg or "chrome binary" in msg or "no such file" in msg:
+            raise CampaignDataError(
+                f"❌ Google Chrome does not appear to be installed.\n"
+                f"   Install Chrome from https://www.google.com/chrome/ and try again.\n"
+                f"   Original error: {e}"
+            )
+        raise CampaignDataError(
+            f"❌ Could not start Chrome. It may already be running with this profile,\n"
+            f"   or the profile is locked by a previous crashed session.\n"
+            f"   Try closing all Chrome windows and running again. If that doesn't help,\n"
+            f"   delete {CHROME_PROFILE_DIR} and scan the QR code again.\n"
+            f"   Original error: {e}"
+        )
 
 
 def wait_for_whatsapp_load(driver: webdriver.Chrome, timeout: int = PAGE_LOAD_TIMEOUT):
@@ -913,6 +1045,7 @@ def cmd_send(campaign_name: str):
     campaign_dir = get_campaign_dir(campaign_name)
     contacts = load_campaign_contacts(campaign_dir)
     template = load_campaign_template(campaign_dir, "message.md")
+    validate_template(template, "message.md")
 
     print("=" * 50)
     print(f"Sending: {campaign_name}")
@@ -984,7 +1117,7 @@ def cmd_send(campaign_name: str):
             display_name = f"{first_name} {last_name}".strip()
             print(f"[{sent_this_run}/{pending_count}] Sending to {display_name} ({phone})...")
 
-            message = personalize_message(template, first_name)
+            message = personalize_message(template, first_name, last_name)
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ok = send_message(driver, phone, message)
@@ -1017,7 +1150,12 @@ def cmd_send(campaign_name: str):
         print("\n⏳ Waiting 5s for last message to deliver...")
         time.sleep(5)
         print("🔒 Closing browser...")
-        driver.quit()
+        # A dead/crashed driver can raise on .quit(). Swallow because the
+        # original exception (if any) is what the user needs to see.
+        try:
+            driver.quit()
+        except Exception:
+            pass
         # If the run is unwinding because of a TrackingLockedError, this final
         # save will fail too — but the first save already wrote a side-file
         # and printed an explanation, so swallow the repeat to avoid masking
@@ -1064,6 +1202,7 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
         return
 
     template = load_campaign_template(campaign_dir, template_file)
+    validate_template(template, template_file)
     to_send = filter_fn(tracking)
 
     if len(to_send) == 0:
@@ -1097,7 +1236,7 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
             display_name = f"{first_name} {last_name}".strip()
             print(f"[{count}/{len(to_send)}] {label} to {display_name} ({phone})...")
 
-            message = personalize_message(template, first_name)
+            message = personalize_message(template, first_name, last_name)
 
             ok = send_message(driver, phone, message)
             if ok:
@@ -1123,7 +1262,12 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
         print("\n⏳ Waiting 5s for last message to deliver...")
         time.sleep(5)
         print("🔒 Closing browser...")
-        driver.quit()
+        # A dead/crashed driver can raise on .quit(). Swallow because the
+        # original exception (if any) is what the user needs to see.
+        try:
+            driver.quit()
+        except Exception:
+            pass
         # If the run is unwinding because of a TrackingLockedError, this final
         # save will fail too — but the first save already wrote a side-file
         # and printed an explanation, so swallow the repeat to avoid masking
