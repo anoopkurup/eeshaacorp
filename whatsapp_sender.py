@@ -91,6 +91,17 @@ class CampaignBusyError(RuntimeError):
     """Raised when another process is already running a command for this campaign."""
 
 
+class TrackingLockedError(RuntimeError):
+    """Raised when tracking.csv can't be opened for writing.
+
+    On Windows, Excel holds an exclusive lock on any open file and every
+    pandas ``to_csv`` raises PermissionError. We surface that up front with
+    a clear instruction to close Excel, rather than letting the message
+    send succeed and the save fail — which would leave the tracker and
+    reality out of sync and cause duplicate sends on the next run.
+    """
+
+
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with this PID is currently running.
 
@@ -256,10 +267,16 @@ def _campaign_run(func):
         campaign_dir = get_campaign_dir(campaign_name)
         try:
             with campaign_lock(campaign_dir):
+                # Refuse to start if tracking.csv is locked by Excel — otherwise
+                # we'd send messages successfully but fail to record them.
+                _assert_tracking_writable(campaign_dir)
                 with _campaign_log_file(campaign_dir, func.__name__.removeprefix("cmd_")):
                     return func(campaign_name, *args, **kwargs)
         except CampaignBusyError as e:
             print(f"❌ {e}")
+            return None
+        except TrackingLockedError as e:
+            print(str(e))
             return None
     return wrapper
 
@@ -402,15 +419,73 @@ def init_tracking(contacts: pd.DataFrame) -> pd.DataFrame:
     return tracking
 
 
-def save_tracking(campaign_dir: Path, tracking: pd.DataFrame):
-    """Save tracking DataFrame to CSV."""
+def _assert_tracking_writable(campaign_dir: Path) -> None:
+    """Refuse to start a send run if tracking.csv is write-locked.
+
+    Called before Chrome opens so the user gets a clear instruction (close
+    Excel) rather than losing progress partway through a send loop.
+    """
+    tracking_path = campaign_dir / "tracking.csv"
+    if not tracking_path.exists():
+        return  # First send — file will be created.
+    try:
+        # Opening in append-binary mode needs write access but doesn't
+        # modify the file. On Windows this raises PermissionError if
+        # Excel has an exclusive lock; on POSIX it almost always succeeds,
+        # which is correct — cooperative file locking is rare on Unix.
+        with open(tracking_path, "a+b"):
+            pass
+    except PermissionError:
+        raise TrackingLockedError(
+            f"❌ tracking.csv is open in another program (likely Excel).\n"
+            f"   Close it (File > Close in Excel), then run this command again.\n"
+            f"   Path: {tracking_path}"
+        )
+
+
+def save_tracking(campaign_dir: Path, tracking: pd.DataFrame, max_retries: int = 3):
+    """Save tracking DataFrame to CSV, with retry + side-file fallback.
+
+    On Windows, Excel holds an exclusive lock on open files. Rather than
+    crash and lose the in-memory state on the very first PermissionError,
+    we retry briefly in case the lock is transient (Excel's auto-save
+    cycle, AV scanner, etc.). If every retry fails we write a side-file
+    and raise ``TrackingLockedError`` so the caller aborts the run — that
+    prevents duplicate sends on the next run, since the just-sent message
+    was never written to the real tracking.csv.
+    """
     tracking_path = campaign_dir / "tracking.csv"
     # Normalize phone numbers before saving to prevent .0 float suffix
     tracking = tracking.copy()
     tracking["phone_number"] = normalize_phone(tracking["phone_number"])
-    # encoding="utf-8" is explicit so non-ASCII names/notes round-trip correctly
-    # on Windows (where the default is cp1252) and any other non-UTF-8 locale.
-    tracking.to_csv(tracking_path, index=False, encoding="utf-8")
+
+    for attempt in range(max_retries):
+        try:
+            # encoding="utf-8" is explicit so non-ASCII names/notes round-trip
+            # correctly on Windows (where the default is cp1252).
+            tracking.to_csv(tracking_path, index=False, encoding="utf-8")
+            return
+        except PermissionError:
+            if attempt < max_retries - 1:
+                time.sleep(2)
+
+    # Every retry failed — write a side-file so progress isn't lost, then
+    # raise so the send loop stops.
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fallback = tracking_path.with_name(f"tracking.csv.pending-{timestamp}")
+    try:
+        tracking.to_csv(fallback, index=False, encoding="utf-8")
+        fallback_msg = (
+            f"   Progress written to {fallback.name} instead.\n"
+            f"   Close Excel, then replace tracking.csv with that file to keep your progress."
+        )
+    except Exception:
+        fallback_msg = "   (Could not write a side-file either — progress may be lost.)"
+
+    raise TrackingLockedError(
+        f"❌ Could not save tracking.csv — it looks like it's open in Excel.\n"
+        f"{fallback_msg}"
+    )
 
 
 def update_tracking_row(tracking: pd.DataFrame, phone_number: str, **kwargs):
@@ -943,7 +1018,14 @@ def cmd_send(campaign_name: str):
         time.sleep(5)
         print("🔒 Closing browser...")
         driver.quit()
-        save_tracking(campaign_dir, tracking)
+        # If the run is unwinding because of a TrackingLockedError, this final
+        # save will fail too — but the first save already wrote a side-file
+        # and printed an explanation, so swallow the repeat to avoid masking
+        # the original error with a duplicate message.
+        try:
+            save_tracking(campaign_dir, tracking)
+        except TrackingLockedError:
+            pass
 
     # Summary
     print()
@@ -1042,7 +1124,14 @@ def _send_targeted(campaign_name: str, template_file: str, filter_fn, tracking_c
         time.sleep(5)
         print("🔒 Closing browser...")
         driver.quit()
-        save_tracking(campaign_dir, tracking)
+        # If the run is unwinding because of a TrackingLockedError, this final
+        # save will fail too — but the first save already wrote a side-file
+        # and printed an explanation, so swallow the repeat to avoid masking
+        # the original error with a duplicate message.
+        try:
+            save_tracking(campaign_dir, tracking)
+        except TrackingLockedError:
+            pass
 
     print()
     cmd_status(campaign_name)
