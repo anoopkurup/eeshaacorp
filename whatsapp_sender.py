@@ -311,7 +311,16 @@ def load_message_template(md_path: str) -> str:
 
 
 def personalize_message(template: str, first_name: str) -> str:
-    """Replace placeholders in template with actual values."""
+    """Replace placeholders in template with actual values.
+
+    Markdown editors (including many on Windows) frequently escape
+    underscores and braces as ``\\_``, ``\\{``, ``\\}`` to prevent
+    markdown formatting — which then causes ``str.format`` to look up
+    the literal key ``first\\_name`` and raise ``KeyError('first\\_name')``.
+    Strip those escape sequences so the template works regardless of how
+    the user saved it.
+    """
+    template = template.replace(r"\_", "_").replace(r"\{", "{").replace(r"\}", "}")
     return template.format(first_name=first_name)
 
 
@@ -370,6 +379,10 @@ def load_tracking(campaign_dir: Path) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = ""
     df["phone_number"] = normalize_phone(df["phone_number"])
+    # Replace NaN with empty string so display / filter logic doesn't trip
+    # on pandas NaN — e.g. a missing last_name was rendering as "nan" in
+    # "[1/3] Sending to Roopesh nan".
+    df = df.fillna("")
     return df
 
 
