@@ -92,34 +92,29 @@ def _button_counts(tracking):
     Mirrors filter logic in whatsapp_sender.py cmd_* functions.
     """
     df = tracking
-    not_locked = ~_yes(df, "locked")
     not_submitted = ~_yes(df, "submitted")
 
     return {
-        "send":         int(((df["status"] == "pending") & not_locked).sum()),
+        "send":         int((df["status"] == "pending").sum()),
         "remind1":      int((
             (df["status"] == "sent")
             & not_submitted
             & ~_yes(df, "reminder1_sent")
-            & not_locked
         ).sum()),
         "remind2":      int((
             _yes(df, "reminder1_sent")
             & not_submitted
             & ~_yes(df, "reminder2_sent")
-            & not_locked
         ).sum()),
         "remind3":      int((
             _yes(df, "reminder2_sent")
             & not_submitted
             & ~_yes(df, "reminder3_sent")
-            & not_locked
         ).sum()),
         "remind_final": int((
             _yes(df, "reminder3_sent")
             & not_submitted
             & ~_yes(df, "reminder_final_sent")
-            & not_locked
         ).sum()),
     }
 
@@ -133,7 +128,6 @@ def _campaign_stats(tracking):
         "sent":                sent,
         "failed":              int((df["status"] == "failed").sum()),
         "pending":             int((df["status"] == "pending").sum()),
-        "paid":                int(_yes(df, "paid").sum()),
         "submitted":           submitted,
         "pending_submission":  max(0, sent - submitted),
         "reminder1_done":      int(_yes(df, "reminder1_sent").sum()),
@@ -144,7 +138,7 @@ def _campaign_stats(tracking):
 
 
 _EMPTY_STATS = {
-    "total": 0, "sent": 0, "failed": 0, "pending": 0, "paid": 0,
+    "total": 0, "sent": 0, "failed": 0, "pending": 0,
     "submitted": 0, "pending_submission": 0,
     "reminder1_done": 0, "reminder2_done": 0,
     "reminder3_done": 0, "reminder_final_done": 0,

@@ -305,7 +305,7 @@ def _campaign_run(func):
 TRACKING_COLUMNS = [
     "first_name", "last_name", "phone_number", "status", "sent_at",
     "submitted", "reminder1_sent", "reminder2_sent", "reminder3_sent", "reminder_final_sent",
-    "paid", "locked", "notes",
+    "notes",
 ]
 
 
@@ -518,8 +518,6 @@ def init_tracking(contacts: pd.DataFrame) -> pd.DataFrame:
     tracking["reminder2_sent"] = "no"
     tracking["reminder3_sent"] = "no"
     tracking["reminder_final_sent"] = "no"
-    tracking["paid"] = "no"
-    tracking["locked"] = ""
     tracking["notes"] = ""
     return tracking
 
@@ -1068,8 +1066,8 @@ def cmd_send(campaign_name: str):
     # Normalize blank status to "pending" (handles manually edited tracking.csv)
     tracking["status"] = tracking["status"].fillna("").replace("", "pending")
 
-    # Filter to only pending, non-locked contacts
-    pending_mask = (tracking["status"] == "pending") & (tracking["locked"].astype(str).str.lower() != "yes")
+    # Filter to only pending contacts
+    pending_mask = tracking["status"] == "pending"
     pending_count = pending_mask.sum()
     already_done = len(tracking) - pending_count
 
@@ -1101,8 +1099,6 @@ def cmd_send(campaign_name: str):
 
         for idx, row in tracking.iterrows():
             if row["status"] != "pending":
-                continue
-            if str(row.get("locked", "")).lower() == "yes":
                 continue
 
             if shutdown_requested:
@@ -1180,8 +1176,7 @@ def cmd_remind1(campaign_name: str):
         return tracking[
             (tracking["status"] == "sent") &
             (tracking["submitted"].astype(str).str.lower() != "yes") &
-            (tracking["reminder1_sent"].astype(str).str.lower() != "yes") &
-            (tracking["locked"].astype(str).str.lower() != "yes")
+            (tracking["reminder1_sent"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "reminder1.md", filter_fn, "reminder1_sent", "Reminder 1")
 
@@ -1288,8 +1283,7 @@ def cmd_remind2(campaign_name: str):
         return tracking[
             (tracking["reminder1_sent"].astype(str).str.lower() == "yes") &
             (tracking["submitted"].astype(str).str.lower() != "yes") &
-            (tracking["reminder2_sent"].astype(str).str.lower() != "yes") &
-            (tracking["locked"].astype(str).str.lower() != "yes")
+            (tracking["reminder2_sent"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "reminder2.md", filter_fn, "reminder2_sent", "Reminder 2")
 
@@ -1301,8 +1295,7 @@ def cmd_remind3(campaign_name: str):
         return tracking[
             (tracking["reminder2_sent"].astype(str).str.lower() == "yes") &
             (tracking["submitted"].astype(str).str.lower() != "yes") &
-            (tracking["reminder3_sent"].astype(str).str.lower() != "yes") &
-            (tracking["locked"].astype(str).str.lower() != "yes")
+            (tracking["reminder3_sent"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "reminder3.md", filter_fn, "reminder3_sent", "Reminder 3")
 
@@ -1314,8 +1307,7 @@ def cmd_remind_final(campaign_name: str):
         return tracking[
             (tracking["reminder3_sent"].astype(str).str.lower() == "yes") &
             (tracking["submitted"].astype(str).str.lower() != "yes") &
-            (tracking["reminder_final_sent"].astype(str).str.lower() != "yes") &
-            (tracking["locked"].astype(str).str.lower() != "yes")
+            (tracking["reminder_final_sent"].astype(str).str.lower() != "yes")
         ]
     _send_targeted(campaign_name, "reminder_final.md", filter_fn, "reminder_final_sent", "Final Reminder")
 
@@ -1333,7 +1325,6 @@ def cmd_status(campaign_name: str):
     sent = len(tracking[tracking["status"] == "sent"])
     failed = len(tracking[tracking["status"] == "failed"])
     pending = len(tracking[tracking["status"] == "pending"])
-    paid = len(tracking[tracking["paid"].astype(str).str.lower() == "yes"])
     submitted = len(tracking[tracking["submitted"].astype(str).str.lower() == "yes"])
     reminder1_done = len(tracking[tracking["reminder1_sent"].astype(str).str.lower() == "yes"])
     reminder2_done = len(tracking[tracking["reminder2_sent"].astype(str).str.lower() == "yes"])
@@ -1348,7 +1339,6 @@ def cmd_status(campaign_name: str):
     print(f"  Sent:                  {sent}")
     print(f"  Failed:                {failed}")
     print(f"  Pending:               {pending}")
-    print(f"  Paid:                  {paid}")
     print(f"  Submitted:             {submitted} / {sent}")
     print(f"  Pending submission:    {pending_submission}")
     print(f"  Reminder 1 sent:       {reminder1_done}")

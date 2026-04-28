@@ -396,8 +396,6 @@ Open it in Excel. You'll see columns for each contact:
   reminder2_sent        - auto
   reminder3_sent        - auto
   reminder_final_sent   - auto
-  paid                  - YOU fill in: yes / no
-  locked                - YOU fill in: yes (excludes from every send)
   notes                 - free text for your own notes
 
 To send reminders:
@@ -421,9 +419,6 @@ Key rules:
     You cannot skip ahead.
   - The ONLY thing that stops reminders is submitted=yes. Whether
     someone replied to WhatsApp or not is irrelevant.
-  - Setting locked=yes excludes that contact from every future
-    send, including initial send and all reminders. Useful when
-    someone opts out.
 
 
 ----------------------------------------------------------------
