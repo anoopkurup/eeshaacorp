@@ -862,9 +862,9 @@ def _apply_backoff_if_needed(send_ok: bool, tracker: BackoffTracker) -> bool:
 
 
 # Seconds to wait for the delivery-tick (check mark) to appear after clicking Send.
-# If this elapses with no tick, the message is still probably in WhatsApp's outbox
-# but we can't confirm delivery — treat as best-effort success.
-DELIVERY_CONFIRM_TIMEOUT = 5
+# 10s catches slow renders on flaky networks; the secondary compose-box-empty
+# check below covers the rest.
+DELIVERY_CONFIRM_TIMEOUT = 10
 
 # Selectors for the delivery-status icon that appears once WhatsApp has accepted
 # the message for sending. These change periodically — keep multiple fallbacks.
@@ -875,14 +875,21 @@ _DELIVERY_TICK_SELECTORS = (
     "span[data-icon='msg-time']",         # clock icon: still sending (counts as queued)
 )
 
+# Selectors for the message compose box. After a successful send WhatsApp
+# clears the box; if our text is still there, the send didn't fire. This is
+# our backup signal when the delivery tick is slow to render.
+_COMPOSE_BOX_SELECTORS = (
+    "div[contenteditable='true'][data-tab='10']",
+    "footer div[contenteditable='true']",
+    "div[contenteditable='true'][role='textbox']",
+)
+
 
 def _wait_for_delivery_tick(driver: webdriver.Chrome, timeout: int = DELIVERY_CONFIRM_TIMEOUT) -> bool:
     """Poll briefly for WhatsApp's post-send tick/clock icon.
 
     Returns True as soon as any delivery indicator is visible, False if the
-    timeout elapses without one. This replaces a blind ``sleep(2)`` and catches
-    cases where the send button was clicked but the message never left the
-    outbox (network blip, account restriction, etc.).
+    timeout elapses without one.
     """
     try:
         wait = WebDriverWait(driver, timeout, poll_frequency=0.3)
@@ -891,6 +898,32 @@ def _wait_for_delivery_tick(driver: webdriver.Chrome, timeout: int = DELIVERY_CO
         return True
     except TimeoutException:
         return False
+
+
+def _compose_box_empty(driver: webdriver.Chrome) -> bool:
+    """Best-effort: is the message compose box empty?
+
+    WhatsApp clears the compose box on successful send. If any contenteditable
+    we recognise is non-empty, the message didn't go out. If we can't find
+    any compose box at all, return False so the caller errs on the side of
+    "failed" — duplicate sends are worse than false negatives.
+    """
+    found_any = False
+    for selector in _COMPOSE_BOX_SELECTORS:
+        try:
+            els = driver.find_elements(By.CSS_SELECTOR, selector)
+        except Exception:
+            continue
+        for el in els:
+            found_any = True
+            try:
+                text = (el.text or "").strip()
+            except Exception:
+                continue
+            if text:
+                return False  # Definitely not empty — send didn't fire
+    # If we saw at least one compose box and none had text, treat as empty.
+    return found_any
 
 
 def send_message(driver: webdriver.Chrome, phone_number: str, message: str) -> bool:
@@ -935,13 +968,28 @@ def send_message(driver: webdriver.Chrome, phone_number: str, message: str) -> b
         # Click send
         send_button.click()
 
-        # Verify delivery by waiting for the tick/clock icon. Falling back to a
-        # short sleep on timeout keeps behaviour close to the old blind-sleep
-        # path — the message likely still went out, we just can't confirm.
+        # Primary signal: the delivery tick/clock icon appears within
+        # DELIVERY_CONFIRM_TIMEOUT seconds. This is the fastest confirmation
+        # of a successful send.
         if _wait_for_delivery_tick(driver):
             return True
-        print("  ⚠ Send clicked but no delivery tick observed within "
-              f"{DELIVERY_CONFIRM_TIMEOUT}s — treating as failed.")
+
+        # Secondary signal: WhatsApp clears the compose box on send. If the
+        # box is empty, the click definitely fired — the tick just hasn't
+        # rendered yet (slow network, laggy session). Treating as sent here
+        # prevents the message being marked failed in tracking.csv, which
+        # would otherwise lock the contact out of all future reminders.
+        if _compose_box_empty(driver):
+            print(
+                f"  ⚠ No delivery tick within {DELIVERY_CONFIRM_TIMEOUT}s, but compose "
+                "box is empty — treating as sent."
+            )
+            return True
+
+        print(
+            f"  ⚠ Send clicked but no delivery tick within {DELIVERY_CONFIRM_TIMEOUT}s "
+            "and compose box still has text — treating as failed."
+        )
         return False
 
     except TimeoutException:
