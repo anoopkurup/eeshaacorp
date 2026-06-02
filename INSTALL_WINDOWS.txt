@@ -281,28 +281,46 @@ Inside that folder, it has placed starter files you need to edit:
   STEP 6: Add Your Contacts
 ----------------------------------------------------------------
 
+  *** READ THIS FIRST — Excel will destroy long phone numbers ***
+
+  If you just open contacts.csv in Excel, type a phone number like
+  919876543210, and save, Excel SILENTLY converts it to scientific
+  notation (9.19877E+11) and throws away the original digits. The
+  app then can't send the message. You MUST format the column as
+  TEXT before typing any numbers. Steps follow.
+
   1. Open File Explorer, go to the campaign folder from Step 5.
-  2. DOUBLE-CLICK "contacts.csv" to open it in Excel (or
-     right-click > Open with > Excel).
-  3. You will see three columns:
-
-        first_name | last_name | phone_number
-
-  4. Fill in your contacts, ONE PER ROW. Example:
+  2. DOUBLE-CLICK "contacts.csv" to open it in Excel.
+  3. Click the column letter "C" (the phone_number column) to
+     highlight the entire column.
+  4. RIGHT-CLICK anywhere in column C, choose "Format Cells…".
+  5. In the dialog, click "Text" in the left list, then click OK.
+     The column is now safe to type long numbers into.
+  6. NOW fill in your contacts, ONE PER ROW. Example:
 
         first_name | last_name | phone_number
         Priya      | Sharma    | 919876543210
         John       | Smith     | 14155551234
 
-  5. IMPORTANT about phone numbers:
+  7. IMPORTANT about phone numbers:
      - Include the COUNTRY CODE at the start.
      - India numbers: start with 91 (e.g. 919876543210)
      - US numbers: start with 1 (e.g. 14155551234)
      - UK numbers: start with 44
      - No spaces, no dashes, no plus sign, just digits.
 
-  6. When done, save the file (File > Save) and close Excel.
+  8. When done, save the file (File > Save) and close Excel.
      If Excel asks about keeping the CSV format, say YES / Keep.
+
+  *** If the app errors out saying "phone number(s) appear to have
+      been corrupted by Excel into scientific notation", you skipped
+      steps 3-5. Re-do them, then re-enter the affected numbers.
+      The original digits CANNOT be recovered — you have to type
+      them again. ***
+
+  Alternative: edit contacts.csv in Notepad instead of Excel. Notepad
+  never touches the numbers. (Right-click contacts.csv > Open with >
+  Notepad.) Type one contact per line with commas between fields.
 
 
 ----------------------------------------------------------------
@@ -533,21 +551,37 @@ for the first one to finish (or click Stop), then try again.
 
 
 ----------------------------------------------------------------
-  7. Excel saved tracking.csv and now phone numbers show as
-     "9.19877E+11" or similar
+  7. "Phone number(s) appear to have been corrupted by Excel
+     into scientific notation"  (e.g. "9.19877E+11")
 ----------------------------------------------------------------
 
-Excel "helpfully" converted long numbers to scientific notation.
-When opening tracking.csv or contacts.csv next time:
+Excel converts long numbers like 919876543210 to scientific notation
+(9.19877E+11) and THROWS AWAY the original digits when saving. The
+app refuses to send because it can't tell what the real number was.
 
-  1. Do NOT double-click it.
-  2. Open Excel first (blank workbook).
-  3. Use Data tab > "From Text/CSV", pick the file.
-  4. In the preview, click the phone_number column header and
-     change its type from "Whole Number" to "Text".
-  5. Click "Load".
+To recover the affected rows, you must RE-TYPE the phone numbers
+from scratch (the original digits are gone from the file). The good
+news: you only need to fix the rows shown in the error message.
 
-Or just edit the file in Notepad - it is plain text.
+Quickest fix:
+
+  1. Right-click contacts.csv > "Open with" > Notepad.
+  2. Find the lines with scientific-notation phone numbers.
+  3. Replace each one with the full digits (e.g. change
+     "9.19877E+11" to "919876543210").
+  4. Save (Ctrl+S) and close Notepad. Done.
+
+To prevent it from happening again in Excel:
+
+  1. Open contacts.csv in Excel.
+  2. Click the column letter for phone_number to select the
+     entire column.
+  3. Right-click > Format Cells > Text > OK.
+  4. Re-enter the affected numbers as full digits.
+  5. Save (keep CSV format).
+
+Best long-term practice: ALWAYS format the phone_number column as
+Text before entering any numbers. See PART B Step 6 above.
 
 
 ----------------------------------------------------------------

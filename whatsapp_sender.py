@@ -311,11 +311,40 @@ TRACKING_COLUMNS = [
 
 # === CONTACT & TEMPLATE LOADING ===
 
+_SCIENTIFIC_NOTATION_RE = r"^\d+\.?\d*[eE][+\-]?\d+$"
+
+
 def normalize_phone(series: pd.Series) -> pd.Series:
-    """Normalize phone numbers: remove +, spaces, parens, dashes, and .0 float suffix."""
+    """Normalize phone numbers: strip +, spaces, parens, dashes, .0 float suffix.
+
+    Also detects Excel's scientific-notation corruption (e.g. ``9.20E+11``)
+    and raises ``CampaignDataError`` rather than trying to "recover" the
+    number — the displayed scientific form has already lost precision, so
+    expanding it would yield the wrong phone number. Better to halt the
+    run with a clear fix instruction than to message a stranger.
+    """
+    s = series.astype(str)
+    sci_mask = s.str.match(_SCIENTIFIC_NOTATION_RE, na=False)
+    if sci_mask.any():
+        bad = sorted(set(s[sci_mask].tolist()))
+        examples = ", ".join(bad[:3])
+        more = f" (+{len(bad) - 3} more)" if len(bad) > 3 else ""
+        raise CampaignDataError(
+            f"❌ {len(bad)} phone number(s) appear to have been corrupted by Excel\n"
+            f"   into scientific notation: {examples}{more}.\n"
+            f"   Excel does this whenever a long number is entered into a 'General' or\n"
+            f"   'Number' cell. The original digits CANNOT be recovered — the displayed\n"
+            f"   form loses precision.\n"
+            f"   Fix the CSV:\n"
+            f"     • Easiest: open the file in Notepad (NOT Excel), re-enter the affected\n"
+            f"       numbers as full digits, save.\n"
+            f"     • In Excel: select the phone_number column, right-click > Format\n"
+            f"       Cells > Text, then re-enter the affected numbers and save.\n"
+            f"   To prevent this in future, always format the phone column as Text\n"
+            f"   BEFORE entering any numbers in Excel."
+        )
     return (
-        series.astype(str)
-        .str.replace(r"\.0$", "", regex=True)   # float suffix from pandas
+        s.str.replace(r"\.0$", "", regex=True)   # float suffix from pandas
         .str.replace(r"[^\d]", "", regex=True)   # keep only digits
     )
 
